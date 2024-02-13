@@ -84,6 +84,9 @@ Function SendEmail ($MessageBody,$ExtOption) {
     $Email = New-Object System.Net.Mail.MailMessage  
     $Email.IsBodyHTML = $true
     $Email.From = $ThisUser
+    If ($ExtOption.Alert){
+        $Email.To.Add($ExtOption.EmailRecipient)  #--[ If a device failed self-test send to group ]--
+    }
     If ($ExtOption.ConsoleState){  #--[ If running out of an IDE console, send to the user only for testing ]--
         $ThisUser = $Env:USERNAME+"@"+$Env:USERDNSDOMAIN 
         $Email.To.Add($ThisUser) 
@@ -464,7 +467,7 @@ ForEach ($Target in $IPList){
                         }
                         "2" {
                             $SaveVal = "Failed"
-                            $Script:Alert = $True 
+                            $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "Alert" -Value $True
                         }
                         "3" {
                             $SaveVal = "Unknown"
@@ -645,11 +648,11 @@ If ($Offline -gt 0){
 }Else{
             $HtmlBody +='<td><font color="green"><strong><center>Offline = '+$Offline+'</center></td>'
 }
-            $HtmlBody +='<td><font color="green"><strong><center>Self Test Passes = '+$TestPass+'</center></td>'
+            $HtmlBody +='<td><font color="green"><strong><center>Self-Test Passes = '+$TestPass+'</center></td>'
 If ($TestFail -gt 0){
-            $HtmlBody +='<td><font color="red"><strong><center>Self Test Failures = '+$TestFail+'</center></td>'
+            $HtmlBody +='<td><font color="red"><strong><center>Self-Test Failures = '+$TestFail+'</center></td>'
 }Else{
-            $HtmlBody +='<td><font color="green"><strong><center>Self Test Failures = '+$TestFail+'</center></td>'
+            $HtmlBody +='<td><font color="green"><strong><center>Self-Test Failures = '+$TestFail+'</center></td>'
 }
 If ($TestUnknown -gt 0){                     
             $HtmlBody +='<td><font color="orange"><strong><center>Unknow Status = '+$TestUnknown+'</center></td>'
