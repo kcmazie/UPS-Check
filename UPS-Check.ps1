@@ -7,18 +7,21 @@ Param(
          File Name : UPS-Check.ps1
    Original Author : Kenneth C. Mazie (kcmjr AT kcmjr.com)
                    : 
-       Description : Uses SNMP to poll and track status of APC UPS devices using MS Excel.
+       Description : Uses SNMP to poll and track APC UPS devices using MS Excel.
                    : 
              Notes : Normal operation is with no command line options.  Commandline options noted below.
                    :
       Requirements : Requires the PowerShell SNMP library from https://www.powershellgallery.com/packages/SNMPv3
                    : Currently designed to poll APC UPS devices.  UPS NMC must have SNMP v3 active.
-                   : Script checks for a text file located in the same folder as the script, one IP per line.  
-                   : Default operation is to check for text file first, then if not found check for an existing 
-                   : spreadsheet also in the same folder.  If an existing spreadsheet is located the target list 
-                   : is compliled from column A.  Up to 10 copies of the HTML report are retained.
+                   : Script checks for active SNMPv1, FTP, and SNMPv3.
+                   : Will generate a new spreadsheet if none exists by using a text file located in the same folder
+                   : as the script, one IP per line.  Default operation is to check for text file first, then if not
+                   : found check for an existing spreadsheet also in the same folder.  If an existing spreadsheet
+                   : is located the target list is compliled from column A.  It will also copy a master spreadsheet
+                   : to a working copy that gets processed.  Up to 10 backup copies are retained prior to writing
+                   : changes to the working copy.
                    : 
-          Warnings : None
+          Warnings : Excel is set to be visible (can be changed) so don't mess with it while the script is running or it can crash.
                    :   
              Legal : Public Domain. Modify and redistribute freely. No rights reserved.
                    : SCRIPT PROVIDED "AS IS" WITHOUT WARRANTIES OR GUARANTEES OF 
@@ -46,19 +49,7 @@ Clear-Host
 #--[ Variables ]---------------------------------------------------------------
 $DateTime = Get-Date -Format MM-dd-yyyy_HHmmss 
 $Today = Get-Date -Format MM-dd-yyyy 
-$IPTextFile = "IPList.txt"
 $Script:v3UserTest = $False
-$ExcelWorkingCopy = ($MyInvocation.MyCommand.Name.Split("_")[0]).Split(".")[0]+".xlsx"
-$ConfigFile = ($MyInvocation.MyCommand.Name.Split("_")[0]).Split(".")[0]+".xml"
-$TestFileName = "$PSScriptRoot\TestFile.txt"
-$Script:Alert = $False
-
-#--[ The following can be hardcoded here or loaded from the XML file ]--
-#$SourcePath = < See external config file >
-#$ExcelSourceFile = < See external config file >
-#$SMNPv3User = < See external config file >
-#$SMNPv3AltUser = < See external config file >
-#$SNMPv3Secret = < See external config file >
 
 #--[ Runtime tweaks for testing ]--
 $EnableExcel = $True
@@ -79,9 +70,9 @@ try{
 }
 
 #==[ Functions ]===============================================================
-Function SendEmail ($MessageBody,$ExtOption,$Console) {    
+Function SendEmail ($MessageBody,$ExtOption) {    
     $ErrorActionPreference = "Stop"
-    $Smtp = New-Object Net.Mail.SmtpClient("mail.company.org") #$ExtOption.SmtpServer,25) 
+    $Smtp = New-Object Net.Mail.SmtpClient("ahmailbag.ah.org") #$ExtOption.SmtpServer,25) 
     Try{  
         If ($Env:Username.SubString(0,1) -eq "a"){
             $ThisUser = ($Env:Username.SubString(1))+"@"+$Env:USERDNSDOMAIN 
@@ -94,28 +85,27 @@ Function SendEmail ($MessageBody,$ExtOption,$Console) {
     $Email = New-Object System.Net.Mail.MailMessage  
     $Email.IsBodyHTML = $true
     $Email.From = $ThisUser
-    $ConsoleHost = GetConsoleHost
-    If ($ConsoleHost.State){  #--[ If running out of an IDE console, send to the user only for testing ]--
+    If ($ExtOption.ConsoleState){  #--[ If running out of an IDE console, send to the user only for testing ]--
         $ThisUser = $Env:USERNAME+"@"+$Env:USERDNSDOMAIN 
         $Email.To.Add($ThisUser) 
     }Else{
         If ($ExtOption.Recipient -eq ""){
             $Email.To.Add($ThisUser) 
         }Else{
-            $Email.To.Add($ThisUser) #$ExtOption.Recipient) 
+            $Email.To.Add($ExtOption.Recipient) 
         }
     }
     $Email.Subject = "UPS Status Report"
     $Email.Body = $MessageBody
     Try {
         $Smtp.Send($Email)
-        If ($Console){Write-Host `n"--- Email Sent ---" -ForegroundColor red }
+        If ($ExtOption.ConsoleState){Write-Host `n"--- Email Sent ---" -ForegroundColor red }
     }Catch{
         $_.Error.Message
         $_.Exception.Message
     }
 }
-Function StatusMsg ($Msg, $Color){
+Function StatusMsg ($Msg, $Color, $ExtOption){
     If ($Null -eq $Color){
         $Color = "Magenta"
     }
@@ -123,151 +113,49 @@ Function StatusMsg ($Msg, $Color){
     $Msg = ""
 }
 
-function RGB ($red, $green, $blue ){
-    return [System.Int]($red + $green * 256 + $blue * 256 * 256)
-}
-
-Function OctetString2String ($Result){
-    $Bytes = [System.Text.Encoding]::Unicode.GetBytes($Result)
-    $SaveVal = "" 
-    ForEach ($Value in $Bytes){
-        If ($Value -ne " "){
-            $SaveVal += ([System.Text.Encoding]::ASCII.GetString($Value)).trim()                
-        }
-    }  
-    Return $SaveVal
-}
-
-Function LoadConfig {
-    #--[ Read and load configuration file ]-------------------------------------
-    if (!(Test-Path "$PSScriptRoot\$ConfigFile")){                       #--[ Error out if configuration file doesn't exist ]--
-        StatusMsg "MISSING CONFIG FILE.  Script aborted." " Red"
+Function LoadConfig ($ExtOption,$ConfigFile){  #--[ Read and load configuration file ]-------------------------------------
+    StatusMsg "Loading external config file..." "Magenta" $ExtOption
+    if (Test-Path -Path $ConfigFile -PathType Leaf){                       #--[ Error out if configuration file doesn't exist ]--
+        [xml]$Config = Get-Content $ConfigFile  #--[ Read & Load XML ]--    
+        $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "SourcePath" -Value $Config.Settings.General.SourcePath
+        $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "ExcelSourceFile" -Value $Config.Settings.General.ExcelSourceFile
+        $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "DNS" -Value $Config.Settings.General.DNS
+        $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "SMNPv3User" -Value $Config.Settings.Credentials.SMNPv3User
+        $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "SMNPv3AltUser" -Value $Config.Settings.Credentials.SMNPv3AltUser
+        $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "SNMPv3Secret" -Value $Config.Settings.Credentials.SMNPv3Secret
+        $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "PasswordFile" -Value $Config.Settings.Credentials.PasswordFile
+        $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "KeyFile" -Value $Config.Settings.Credentials.KeyFile
+        $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "IPlistFile" -Value $Config.Settings.General.IPListFile
+    }Else{
+        StatusMsg "MISSING XML CONFIG FILE.  File is required.  Script aborted..." " Red" $ExtOption
         break;break;break
-    }else{
-        [xml]$Configuration = Get-Content "$PSScriptRoot\$ConfigFile"  #--[ Read & Load XML ]--    
-        $Script:SourcePath = $Configuration.Settings.General.SourcePath
-        $Script:ExcelSourceFile = $Configuration.Settings.General.ExcelSourceFile
-        $Script:DNS = $Configuration.Settings.General.DNS 
-        $Script:SMNPv3User = $Configuration.Settings.Credentials.SMNPv3User
-        $Script:SMNPv3AltUser = $Configuration.Settings.Credentials.SMNPv3AltUser
-        $Script:SNMPv3Secret = $Configuration.Settings.Credentials.SMNPv3Secret
-        $Script:PasswordFile = $Configuration.Settings.Credentials.PasswordFile
-        $Script:KeyFile = $Configuration.Settings.Credentials.KeyFile
     }
-    <#
-        Function LoadConfig ($ExtOption,$ConfigFile){  #--[ Read and load configuration file ]-------------------------------------
-        StatusMsg "Loading external config file..." "Magenta" $ExtOption
-        if (Test-Path -Path $ConfigFile -PathType Leaf){                       #--[ Error out if configuration file doesn't exist ]--
-            [xml]$Config = Get-Content $ConfigFile  #--[ Read & Load XML ]--    
-            $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "Recipient" -Value $Config.Settings.General.Recipient
-            $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "ExcelFileName" -Value $Config.Settings.General.ExcelFileName
-            $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "ExcelFilePath" -Value $Config.Settings.General.ExcelFilePath
-            $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "SmtpServer" -Value $Config.Settings.General.SmtpServer
-            $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "OneDrivePath" -Value $Config.Settings.General.OneDrivePath
-            $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "ErrorLog" -Value $PSScriptRoot\errorlog.txt
-        }Else{
-            StatusMsg "MISSING XML CONFIG FILE.  File is required.  Script aborted..." " Red" $ExtOption
-            break;break;break
-        }
-        Return $ExtOption
-    }#>
+   Return $ExtOption
 }
 
-Function GetConsoleHost {  #--[ Detect if we are using a script editor or the console ]--
-    $Console = $False
+Function GetConsoleHost ($ExtOption){  #--[ Detect if we are using a script editor or the console ]--
     Switch ($Host.Name){
         'consolehost'{
-            Write-Host "PowerShell Console Detected"
-            $Console = $False
+            $ExtOption | Add-Member -MemberType NoteProperty -Name "ConsoleState" -Value $False -force
+            $ExtOption | Add-Member -MemberType NoteProperty -Name "ConsoleMessage" -Value "PowerShell Console detected." -Force
         }
         'Windows PowerShell ISE Host'{
-            Write-Host "PowerShell ISE Detected"
-            $Console = $True
+            $ExtOption | Add-Member -MemberType NoteProperty -Name "ConsoleState" -Value $True -force
+            $ExtOption | Add-Member -MemberType NoteProperty -Name "ConsoleMessage" -Value "PowerShell ISE editor detected." -Force
         }
         'PrimalScriptHostImplementation'{
-            Write-Host "PrimalScript or PowerShell Studio Detected"
-            $Console = $True
+            $ExtOption | Add-Member -MemberType NoteProperty -Name "ConsoleState" -Value $True -force
+            $ExtOption | Add-Member -MemberType NoteProperty -Name "COnsoleMessage" -Value "PrimalScript or PowerShell Studio editor detected." -Force
         }
         "Visual Studio Code Host" {
-            Write-Host "Visual Studio Code Detected"
-            $Console = $True
+            $ExtOption | Add-Member -MemberType NoteProperty -Name "ConsoleState" -Value $True -force
+            $ExtOption | Add-Member -MemberType NoteProperty -Name "ConsoleMessage" -Value "Visual Studio Code editor detected." -Force
         }
     }
-    Return $Console
-}
-
-Function CallPlink ($IP,$command){
-    $ErrorActionPreference = "silentlycontinue"  #--[ Must be set as shown or plink will fail ]--
-    $Switch = $False
-    $UN = $Env:USERNAME
-    $DN = $Env:USERDOMAIN
-    $UID = $DN+"\"+$UN
-    If (Test-Path -Path $Script:PasswordFile){
-        $Base64String = (Get-Content $Script:KeyFile)
-        $ByteArray = [System.Convert]::FromBase64String($Base64String)
-        $Credential = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $UID, (Get-Content $PasswordFile | ConvertTo-SecureString -Key $ByteArray)
-    }Else{
-        $Credential = Get-Credential
+    If ($ExtOption.ConsoleState){
+        StatusMsg "Detected session running from an editor..." "Magenta" $ExtOption
     }
-    #------------------[ Decrypted Result ]-----------------------------------------
-    $Password = $Credential.GetNetworkCredential().Password
-    $Domain = $Credential.GetNetworkCredential().Domain
-    $Username = $Domain+"\"+$Credential.GetNetworkCredential().UserName
-
-    If (Test-Connection -ComputerName $IP -count 1 -BufferSize 16 -Quiet) {
-        #--[ Detect and store SSH key in local registry if needed ]--
-        # StatusMsg "Automatically storing SSH key if needed." "Magenta"
-        # Write-Output "Y" | 
-        # plink-v52.exe -ssh -pw $password $username@$IP #"exit" #*>&1
-        # plink-v73.exe -ssh -pw $password $username@$IP #-batch #"exit" #*>&1
-        # Start-Sleep -Milliseconds 500
-        #------------------------------------------------------------
-        StatusMsg "Plink IP: $IP" "Magenta"
-        #$test = @(plink-v73.exe -ssh -no-antispoof -pw $Password $username@$IP $command ) #*>&1)
-        $test = @(plink-v73.exe -ssh -no-antispoof -batch -pw $Password $Username@$IP $command *>&1)
-
-        If ($test -like "*abandoned*"){
-            StatusMsg "Switching Plink version" "Magenta"
-            $Switch = $true
-        }Else{
-            StatusMsg 'Plink version 73 test passed' 'Magenta'
-        }
-        If ($Switch){
-            $Msg = 'Executing Plink v52 (Command = '+$Command+')'
-            StatusMsg $Msg 'blue'
-            $Result = @(plink-v52.exe -ssh -no-antispoof -batch -pw $Password $username@$IP $command *>&1) 
-            $Result
-        }Else{
-            $ErrorActionPreference = "continue"
-            $Msg = 'Executing Plink v73 (Command = '+$Command+')'
-            StatusMsg $Msg 'magenta'
-                $Result = @(plink-v73.exe -ssh -no-antispoof -batch -pw $Password $username@$IP $command *>&1)
-                $Result
-        }
-        ForEach ($Line in $Result){
-            If ($Line -like "*denied*"){
-                $Result = "ACCESS-DENIED"
-                Break
-            } 
-        }
-        StatusMsg "Command completed..." "Magenta"
-        Return $Result
-    }Else{
-        StatusMsg "Pre-Plink PING check FAILED" "Red"
-    }
-} 
-
-Function TCPportTest ($Target, $Port, $Debug){
-    Try{
-        #$Result = Test-NetConnection -ComputerName $Target -Port $Port #-ErrorAction SilentlyContinue -WarningAction SilentlyContinue #-InformationLevel Quiet
-        $Result = New-Object System.Net.Sockets.TcpClient($Target, $Port) -ErrorAction:Stop
-    }Catch{
-        Return $_.Exception.Message
-    }
-    If ($Debug){
-        Write-host "`nFTP Debug :" $Result.connected -foregroundcolor red
-    }
-    return $Result
+    Return $ExtOption
 }
 
 Function SMNPv3Walk ($Target,$OID,$Debug){
@@ -356,78 +244,6 @@ Function GetSMNPv3 ($Target,$OID,$Debug,$Test){
     Return $Result
 }
 
-Function GetMAC ($WorkSheet,$Obj,$Row,$Col,$Debug){
-    StatusMsg "Pulling MAC address from network switch..." "Magenta"
-    $MAC = ""
-    $Existing = $WorkSheet.Cells.Item($Row,29).Text        #\
-    $Switch = $WorkSheet.Cells.Item($Row,6).Text           #--[ Read existing spreadsheet cell data for comparison ]-- 
-    $Port = $WorkSheet.Cells.Item($Row,7).Text             #/
-
-    If ($Port -NotLike "*Gi*"){  #--[ Assuming all the ports are gig ports, check for spelling issues ]--
-        StatusMsg "1 Switchport ID issue detected... Please check spreadsheet..." "red"
-    }
-
-    Try{
-        $Cmd = "sh mac addr | i "+$Port
-        $SwitchIP = [string](nslookup $Switch 10.1.1.1 2>&1)
-        $SwitchIP = ($SwitchIP.Split(":")[4]).Trim()
-        $SwitchData = CallPlink $SwitchIP $Cmd
-    }Catch{
-        $MAC = "Not Detected"
-    }
-
-    Try{
-        $Found = select-string "([A-Za-z0-9]+(\.[A-Za-z0-9]+)+)" -inputobject $SwitchData -ErrorAction:SilentlyContinue
-        $MAC = ((($Found.Matches.groups[0].value) -Replace '\.', '') -replace '..(?!$)', '$&:').ToUpper()
-    }catch{
-        $MAC = "Not Detected"
-    }
-    
-    If ($Debug){
-        $Color = "yellow"
-        StatusMsg "Switch name = $switch" $Color
-        StatusMsg "Switch IP = $SwitchIP" $Color
-        StatusMsg "Switch port = $port" $Color
-        StatusMsg "Existing MAC = $existing" $Color
-        StatusMsg "Detected MAC = $mac" $Color
-        StatusMsg "Line returned from switch: $SwitchData" $Color
-    }
-    
-    $Obj | Add-Member -MemberType NoteProperty -Name "SwitchIP" -Value $SwitchIP
-    $Obj | Add-Member -MemberType NoteProperty -Name "SwitchName" -Value $Switch
-    $Obj | Add-Member -MemberType NoteProperty -Name "SwitchPort" -Value $Port
-    $Obj | Add-Member -MemberType NoteProperty -Name "RealMAC" -Value $MAC
-    Return $Obj
-}
-
-Function OpenExcel ($Excel,$ExcelWorkingCopy,$SheetName,$Console) {
-    If (Test-Path -Path "$PSScriptRoot\$ExcelWorkingCopy" -PathType Leaf){
-        $Script:SpreadSheet = "Existing"
-        $WorkBook = $Excel.Workbooks.Open("$PSScriptRoot\$ExcelWorkingCopy")
-        $WorkSheet = $Workbook.WorkSheets.Item($SheetName)
-        $WorkSheet.activate()
-    }
-    Return $WorkBook
-}
-
-Function GetSource ($SourcePath,$ExcelSourceFile,$ExcelWorkingCopy){
-    StatusMsg "Excel working copy was not found, copying from source..." "Magenta"
-    If (Test-Path -Path "$SourcePath\$ExcelSourceFile" -PathType Leaf){
-        Try{
-            Copy-Item -Path "$SourcePath\$ExcelSourceFile"  -Destination "$PSScriptRoot\$ExcelWorkingCopy" -force -ErrorAction:Stop
-            Return $True
-        }Catch{
-            write-host $_.Exception.Message
-            write-host $_.Error.Message
-            Return $False   
-            StatusMsg "Copy failed... " "red" 
-        }
-    }Else{   
-        StatusMsg "Source file check failed... " "red"
-        Return $False
-    }
-}
-
 #--[ End of Functions ]-------------------------------------------------------
 
 $OIDArray = @()
@@ -474,18 +290,28 @@ $OIDArray += ,@('BattRunTime','.1.3.6.1.4.1.318.1.1.1.2.2.3.0')
 
 #==[ Begin ]==============================================================
 
-LoadConfig
-StatusMsg "Processing UPS Devices" "Yellow"
+#--[ Load external XML options file ]--
+$ConfigFile = $PSScriptRoot+"\"+($MyInvocation.MyCommand.Name.Split("_")[0]).Split(".")[0]+".xml"
+$ExtOption = New-Object -TypeName psobject #--[ Object to hold runtime options ]--
+$ExtOption = LoadConfig $ExtOption $ConfigFile
+
+#--[ Detect Runspace ]--
+$ExtOption = GetConsoleHost $ExtOption 
+If ($ExtOption.ConsoleState){ 
+    StatusMsg $ExtOption.ConsoleMessage "Cyan" $ExtOption
+}
+
+StatusMsg "Processing UPS Devices" "Yellow" $ExtOption
 $erroractionpreference = "stop"
 
 #--[ Close copies of Excel that PowerShell has open ]--
 If ($CloseOpen){
-    $ProcID = Get-CimInstance Win32_Process | where {$_.name -like "*excel*"}
+    $ProcID = Get-CimInstance Win32_Process | Where-Object {$_.name -like "*excel*"}
     ForEach ($ID in $ProcID){  #--[ Kill any open instances to avoid issues ]--
         Foreach ($Proc in (get-process -id $id.ProcessId)){
             if (($ID.CommandLine -like "*/automation -Embedding") -Or ($proc.MainWindowTitle -like "$ExcelWorkingCopy*")){
                 Stop-Process -ID $ID.ProcessId -Force
-                StatusMsg "Killing any existing open PowerShell instance of Excel..." "Red"
+                StatusMsg "Killing any existing open PowerShell instance of Excel..." "Red" $ExtOption
                 Start-Sleep -Milliseconds 100
             }
         }
@@ -494,36 +320,27 @@ If ($CloseOpen){
 
 #--[ Create new Excel COM object ]--
 $Excel = New-Object -ComObject Excel.Application -ErrorAction Stop
-StatusMsg "Creating new Excel COM object..." "Magenta"
+StatusMsg "Creating new Excel COM object..." "Magenta" $ExtOption
 
-#--[ If this file exists the IP list will be pulled from it ]--
-If (Test-Path -Path $TestFileName){   
-    $ListFileName = $TestFileName   #--[ Select an alternate short IP text file to use ]--
-}Else{ 
-    $ListFileName = "$PSScriptRoot\$IPTextFile"   #--[ Select the normal IP text file to use ]--
+If (Test-Path -Path $ExtOption.SourcePath -PathType leaf){
+    $SourcePath = $ExtOption.SourcePath
+}Else{
+    $SourcePath = $PSScriptRoot
 }
 
-#--[ Identify IP address list source and process. ]--
-If (Test-Path -Path $ListFileName){  #--[ If text file exists pull from there. ]--
-    $IPList = Get-Content $ListFileName          
-    StatusMsg "IP text list was found, loading IP list from it... " "green" 
+#--[ If this file exists the IP list will be pulled from it ]--
+If (Test-Path -Path ($SourcePath+"\"+$ExtOption.IPListFile) -PathType Leaf){   
+    $IPList = Get-Content ($SourcePath+"\"+$ExtOption.IPListFile)         
+    StatusMsg "IP text list was found, loading IP list from it... " "green"  $ExtOption
 }else{ 
-    $ExcelWorkingCopy = "ups-inventory.xlsx"
-
-    StatusMsg "IP text list not found, Attempting to process spreadsheet... " "cyan"
-    If (Test-Path -Path "$PSScriptRoot\$ExcelWorkingCopy" -PathType Leaf){
+    StatusMsg "IP text list not found, Attempting to process spreadsheet... " "cyan" $ExtOption
+    If (Test-Path -Path ($SourcePath+"\"+$ExtOption.ExcelSourceFile) -PathType Leaf){
         $Excel.Visible = $false
-
-      #  If (Test-Path -Path "$PSScriptRoot\$ExcelWorkingCopy" -PathType Leaf){
-            $Script:SpreadSheet = "Existing"
-            $WorkBook = $Excel.Workbooks.Open("$PSScriptRoot\$ExcelWorkingCopy")
-            $WorkSheet = $Workbook.WorkSheets.Item("UPS")
-            $WorkSheet.activate()
-       # }
-        #Return $WorkBook
-       # $WorkBook = OpenExcel $Excel $ExcelWorkingCopy "UPS" $Console #--[ Open the existing spreadsheet if detected. ]--            
+        $WorkBook = $Excel.Workbooks.Open(($SourcePath+"\"+$ExtOption.ExcelSourceFile))
+        $WorkSheet = $Workbook.WorkSheets.Item("UPS")
+        $WorkSheet.activate()       
     }Else{
-        StatusMsg "Existing spreadsheet not found, Source copy failed, Nothing to process.  Exiting... " "red"
+        StatusMsg "Existing spreadsheet not found, Source copy failed, Nothing to process.  Exiting... " "red" $ExtOption
         Break;break
     }
     $WorkSheet = $Workbook.WorkSheets.Item("UPS")
@@ -559,7 +376,6 @@ $Offline = 0
 $HtmlHeader = @() 
 $HtmlReport = @() 
 $HtmlBody = @()
-
 $Count = $IPList.Count
 
 ForEach ($Target in $IPList){
@@ -568,7 +384,7 @@ ForEach ($Target in $IPList){
         $Target = $Target[1]
     }
     $Current = $Row-3
-    If ($Console){Write-Host "`nCurrent Target  :"$Target"  ("$Current" of "$Count")" -ForegroundColor Yellow }
+    If ($ExtOption.ConsoleState){Write-Host "`nCurrent Target  :"$Target"  ("$Current" of "$Count")" -ForegroundColor Yellow }
    
     $Obj = New-Object -TypeName psobject   #--[ Collection for Results ]--
     Try{
@@ -584,8 +400,8 @@ ForEach ($Target in $IPList){
 
     If (Test-Connection -ComputerName $Target -count 1 -BufferSize 16 -Quiet){  #--[ Ping Test ]--
         $Obj | Add-Member -MemberType NoteProperty -Name "Connection" -Value "Online" -force
-        StatusMsg "Polling SNMP..." "Magenta"
-        If ((!($Debug)) -and ($Console)){Write-Host "  Working." -NoNewline}
+        If ($ExtOption.ConsoleState){StatusMsg "Polling SNMP..." "Magenta" $ExtOption}
+        If ((!($Debug)) -and ($ExtOption.ConsoleState)){Write-Host "  Working." -NoNewline}
 
         #--[ Test for SNMPv3.  Make sure to include leading comma  ]---------
         $Test = GetSMNPv3 $Target ",1.3.6.1.2.1.1.8.0" $Debug $Script:v3UserTest
@@ -595,7 +411,7 @@ ForEach ($Target in $IPList){
             $PortTest = "False"
         }
         $Obj | Add-Member -MemberType NoteProperty -Name "SNMPv3" -Value $PortTest -force
-        If (!($Debug)){Write-Host "." -NoNewline}
+        If ((!($Debug)) -and ($ExtOption.Console)){Write-Host "." -NoNewline}
 
         #--[ Test for SNMPv1 ]------------------------------------------------
         $Test = GetSNMPv1 $Target "1.3.6.1.2.1.1.8.0" $Debug
@@ -614,7 +430,7 @@ ForEach ($Target in $IPList){
             If ($Debug){
                 Write-Host ' '$Item[0]'='$Result -ForegroundColor yellow
             }Else{
-                If ($Console){Write-Host "." -NoNewline}   #--[ Writes a string of dots to show operation is proceeding ]--
+                If ($ExtOption.ConsoleState){Write-Host "." -NoNewline}   #--[ Writes a string of dots to show operation is proceeding ]--
             }
 
             If ($Obj.HostName -like "*chill*" ){
@@ -758,10 +574,11 @@ ForEach ($Target in $IPList){
 
     }Else{
         $Offline ++   
-        If ($Console){Write-host "--- OFFLINE ---$Offline" -foregroundcolor "Red"}
+        $Obj | Add-Member -MemberType NoteProperty -Name "Connection" -Value "Offline" -force
+        If ($ExtOption.ConsoleState){Write-host "--- OFFLINE ---" -foregroundcolor "Red"}
     }
 
-    If ($Console){
+    If ($ExtOption.ConsoleState){
         Write-host " "
         $Obj
     }    
@@ -809,7 +626,6 @@ $HtmlHeader += '
 <meta name="viewport" content="width=device-width, initial-scale=1">
 </head>
 '
-
 $HtmlBody +='
 <body>
     <div class="content">
@@ -866,19 +682,19 @@ $HtmlReport += '<tr><td colspan='+$Columns+'><center><font color=darkcyan><stron
 $HtmlReport += '</table></div></body></html>'
 
 #--[ Only keep the last 10 of the log files ]-- 
-If (!(Test-Path -PathType container "$PSScriptRoot\Reports")){
-      New-Item -ItemType Directory -Path "$PSScriptRoot\Reports" -Force
+If (!(Test-Path -PathType container ($SourcePath+"\Reports"))){
+      New-Item -ItemType Directory -Path ($PSScriptRoot+"\Reports") -Force
 }
-Get-ChildItem -Path "$PSScriptRoot\Reports" | Where-Object {(-not $_.PsIsContainer) -and ($_.Name -like "*html*")} | Sort-Object -Descending -Property LastTimeWrite | Select-Object -Skip 10 | Remove-Item
+Get-ChildItem -Path ($SourcePath+"\Reports") | Where-Object {(-not $_.PsIsContainer) -and ($_.Name -like "*html*")} | Sort-Object -Descending -Property LastTimeWrite | Select-Object -Skip 10 | Remove-Item
 $DateTime = Get-Date -Format MM-dd-yyyy_hh.mm.ss 
-$Report = "$PSScriptRoot\Reports\UPS-Status_$DateTime.html"
+$Report = ($SourcePath+"\Reports\UPS-Status_"+$DateTime+".html")
 Add-Content -Path $Report -Value $HtmlReport
 
 #--[ Use to load the report in the default browser ]--
 # iex "$PSScriptRoot\temp.html"
 
-SendEmail $HtmlReport $ExtOption $Console
-If ($Console){Write-host "`n--- Completed ---" -foregroundcolor red}
+SendEmail $HtmlReport $ExtOption 
+If ($ExtOption.ConsoleState){Write-host "`n--- Completed ---" -foregroundcolor red}
 
 
 <#--[ XML File Example -- File should be named same as the script ]--
@@ -888,9 +704,10 @@ If ($Console){Write-host "`n--- Completed ---" -foregroundcolor red}
         <SourcePath>c:\Scripts\UPS-Inventory</SourcePath>
         <ExcelSourceFile>UPS-Inventory.xlsx</ExcelSourceFile>
 		<DNS>10.1.1.1</DNS>
+        <IPListFile>IP-List.txt</IPListFile>
     </General>
     <Credentials>
-	<PasswordFile>c:\passfile.txt</PasswordFile>
+	<PasswordFile>passfile.txt</PasswordFile>
 	<KeyFile>c:\keyfile.txt</KeyFile>
 	<SMNPv3User>snmpv3user</SMNPv3User>
         <SMNPv3AltUser>snmpv3altusername</SMNPv3AltUser>
