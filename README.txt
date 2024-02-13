@@ -10,16 +10,14 @@ Pulls status from a list of APC UPS devices and emails an HTML Report.
              Notes : Normal operation is with no command line options.  Commandline options noted below.
                    :
       Requirements : Requires the PowerShell SNMP library from https://www.powershellgallery.com/packages/SNMPv3
-                   : Currently designed to poll APC UPS devices.  UPS NMC must have SNMP v3 active.
-                   : Script checks for active SNMPv1, FTP, and SNMPv3.
-                   : Will generate a new spreadsheet if none exists by using a text file located in the same folder
-                   : as the script, one IP per line.  Default operation is to check for text file first, then if not
-                   : found check for an existing spreadsheet also in the same folder.  If an existing spreadsheet
-                   : is located the target list is compliled from column A.  It will also copy a master spreadsheet
-                   : to a working copy that gets processed.  Up to 10 backup copies are retained prior to writing
-                   : changes to the working copy.
+                   : Currently designed to poll APC UPS devices and emails a report.  UPS NMC must have SNMP v3 active.
+                   : Script checks for active ping and SNMPv3.  Default operation is to check for a local text file 
+                   : first, then if not found check for an existing Excel spreadsheet in the same folder or specified
+                   : in the external config file.  If an existing spreadsheet is located the target list is compliled
+                   : from column A.  Up to 10 copies of the HTML report are retained in a reports folder.  External
+                   : config file example is at the end of the script.
                    : 
-          Warnings : Excel is set to be visible (can be changed) so don't mess with it while the script is running or it can crash.
+          Warnings : None
                    :   
              Legal : Public Domain. Modify and redistribute freely. No rights reserved.
                    : SCRIPT PROVIDED "AS IS" WITHOUT WARRANTIES OR GUARANTEES OF 
@@ -37,5 +35,6 @@ Pulls status from a list of APC UPS devices and emails an HTML Report.
                    : v5.0 - 01-17-24 - Fixed DNS lookup.  Fixed last test result.  Fixed color coding of hostname for
                    :                   numerous events.  Added hostname cell comments to describe color coding.
                    : v6.0 - 02-12-24 - Retooled Html email report.  Added self test failed counts.  Added saved reports.
+                   : v6.1 - 02-13-24 - Added missing external config entries.
                    :                   
 ==============================================================================#>
