@@ -36,5 +36,6 @@ Pulls status from a list of APC UPS devices and emails an HTML Report.
                    :                   numerous events.  Added hostname cell comments to describe color coding.
                    : v6.0 - 02-12-24 - Retooled Html email report.  Added self test failed counts.  Added saved reports.
                    : v6.1 - 02-13-24 - Added missing external config entries.
+                   : v7.0 - 02-16-24 - Fixed major bugs after moving config to external XML.
                    :                   
 ==============================================================================#>
