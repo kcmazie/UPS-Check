@@ -1,7 +1,6 @@
 Param(
     [switch]$Console = $false,                                                  #--[ Set to true to enable local console result display. Defaults to false ]--
-    [switch]$Debug = $False,                                                    #--[ Generates extra console output for debugging.  Defaults to false ]--
-    [switch]$EnableExcel = $True                                                #--[ Defaults to use Excel. ]--  
+    [switch]$Debug = $False                                                     #--[ Generates extra console output for debugging.  Defaults to false ]--
 )
 <#==============================================================================
          File Name : UPS-Check.ps1
@@ -38,6 +37,7 @@ Param(
                    :                   numerous events.  Added hostname cell comments to describe color coding.
                    : v6.0 - 02-12-24 - Retooled Html email report.  Added self test failed counts.  Added saved reports.
                    : v6.1 - 02-13-24 - Added missing external config entries.
+                   : v7.0 - 02-16-24 - Fixed major bugs after moving config to external XML.
                    :                   
 ==============================================================================#>
 
@@ -51,9 +51,8 @@ $Today = Get-Date -Format MM-dd-yyyy
 $Script:v3UserTest = $False
 
 #--[ Runtime tweaks for testing ]--
-$EnableExcel = $True
 $Console = $True
-$Debug = $false #true
+$Debug = $false
 $CloseOpen = $true
 
 #------------------------------------------------------------
@@ -69,7 +68,7 @@ try{
 }
 
 #==[ Functions ]===============================================================
-Function SendEmail ($MessageBody,$ExtOption) {    
+Function SendEmail ($MessageBody,$ExtOption) {   
     $ErrorActionPreference = "Stop"
     $Smtp = New-Object Net.Mail.SmtpClient($ExtOption.SmtpServer,25) 
     Try{  
@@ -84,17 +83,20 @@ Function SendEmail ($MessageBody,$ExtOption) {
     $Email = New-Object System.Net.Mail.MailMessage  
     $Email.IsBodyHTML = $true
     $Email.From = $ThisUser
-    If ($ExtOption.Alert){
-        $Email.To.Add($ExtOption.EmailRecipient)  #--[ If a device failed self-test send to group ]--
-    }
+
     If ($ExtOption.ConsoleState){  #--[ If running out of an IDE console, send to the user only for testing ]--
         $ThisUser = $Env:USERNAME+"@"+$Env:USERDNSDOMAIN 
         $Email.To.Add($ThisUser) 
     }Else{
-        If ($ExtOption.Recipient -eq ""){
-            $Email.To.Add($ThisUser) 
+        If ($ExtOption.Alert){
+            $Email.To.Add($ExtOption.EmailRecipient)  #--[ If a device failed self-test always send to group ]--
         }Else{
-            $Email.To.Add($ExtOption.EmailRecipient) 
+            If ($ExtOption.EmailRecipient -eq ""){
+                $Email.To.Add($ThisUser) 
+            }Else{    
+                $Email.To.Add($ThisUser)   #--[ In case this user isn't part of the group email ]--        
+                #$Email.To.Add($ExtOption.EmailRecipient)  #--[ Uncomment to ALWAYS send to group ]--
+            }
         }
     }
     $Email.Subject = "UPS Status Report"
@@ -103,15 +105,19 @@ Function SendEmail ($MessageBody,$ExtOption) {
         $Smtp.Send($Email)
         If ($ExtOption.ConsoleState){Write-Host `n"--- Email Sent ---" -ForegroundColor red }
     }Catch{
-        $_.Error.Message
-        $_.Exception.Message
+        Write-host "-- Error sending email --" -ForegroundColor Red
+        Write-host "Error Msg     = "$_.Error.Message
+        Write-host "Exception Msg = "$_.Exception.Message
+        Write-host "Local Sender  = "$ThisUser
+        Write-host "Recipient     = "$ExtOption.EmailRecipient
+        Write-host "SMTP Server   = "$ExtOption.SmtpServer
     }
 }
 Function StatusMsg ($Msg, $Color, $ExtOption){
     If ($Null -eq $Color){
         $Color = "Magenta"
     }
-    Write-Host "-- Script Status: $Msg" -ForegroundColor $Color
+    Write-Host "-- Script Status: $Msg" -ForeGroundColor $Color
     $Msg = ""
 }
 
@@ -122,15 +128,16 @@ Function LoadConfig ($ExtOption,$ConfigFile){  #--[ Read and load configuration 
         $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "SourcePath" -Value $Config.Settings.General.SourcePath
         $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "ExcelSourceFile" -Value $Config.Settings.General.ExcelSourceFile
         $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "DNS" -Value $Config.Settings.General.DNS
-        $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "SMNPv3User" -Value $Config.Settings.Credentials.SMNPv3User
-        $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "SMNPv3AltUser" -Value $Config.Settings.Credentials.SMNPv3AltUser
-        $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "SNMPv3Secret" -Value $Config.Settings.Credentials.SMNPv3Secret
+        $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "SNMPv3User" -Value $Config.Settings.Credentials.SNMPv3User
+        $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "SNMPv3AltUser" -Value $Config.Settings.Credentials.SNMPv3AltUser
+        $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "SNMPv3Secret" -Value $Config.Settings.Credentials.SNMPv3Secret
         $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "PasswordFile" -Value $Config.Settings.Credentials.PasswordFile
         $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "KeyFile" -Value $Config.Settings.Credentials.KeyFile
         $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "IPlistFile" -Value $Config.Settings.General.IPListFile
         $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "SmtpServer" -Value $Config.Settings.General.SmtpServer
         $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "EmailRecipient" -Value $Config.Settings.General.EmailRecipient
         $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "HNPattern" -Value $Config.Settings.General.HNPattern
+        $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "Debug" -Value $False
     }Else{
         StatusMsg "MISSING XML CONFIG FILE.  File is required.  Script aborted..." " Red" $ExtOption
         break;break;break
@@ -163,65 +170,64 @@ Function GetConsoleHost ($ExtOption){  #--[ Detect if we are using a script edit
     Return $ExtOption
 }
 
-Function SMNPv3Walk ($Target,$OID,$Debug){
+Function SNMPv3Walk ($Obj,$ExtOption,$OID){
     $WalkRequest = @{
-        UserName   = $Script:SMNPv3User
-        Target     = $Target
+        UserName   = $ExtOption.SNMPv3User
+        Target     = $Obj.IPAddress
         OID        = $OID
         AuthType   = 'MD5'
-        AuthSecret = $Script:SNMPv3Secret
+        AuthSecret = $ExtOption.SNMPv3Secret
         PrivType   = 'DES'
-        PrivSecret = $Script:SNMPv3Secret
+        PrivSecret = $ExtOption.SNMPv3Secret
         #Context    = ''
     }
     $Result = Invoke-SNMPv3Walk @WalkRequest | Format-Table -AutoSize
-    If ($Debug){write-host "SNMpv3 Debug :" $Result }
+    If ($ExtOption.Debug){write-host "SNMpv3 Debug :" $Result }
     Return $Result
 }
 
-Function GetSNMPv1 ($Target,$OID,$Debug) {
+Function GetSNMPv1 ($Obj,$ExtOption,$OID) {
     $SNMP = New-Object -ComObject olePrn.OleSNMP
     $erroractionpreference = "Stop"
     Try{
-        $snmp.open($Target,$Script:SMNPv3User,2,1000)
+        $snmp.open($Obj.IPAddress,$ExtOption.SNMPv3User,2,1000)
         $Result = $snmp.get($OID)
     }Catch{
-        Return $_.Exception.Message        
+        $Result = $_.Exception.Message        
     }
-    If ($Debug){ write-host "SNMpv1 Debug :" $Result }
-    Return $Result
+    If ($ExtOption.Debug){ write-host "SNMpv1 Debug :" $Result }
+#    Return $Result
+    $Obj | Add-Member -MemberType NoteProperty -Name "Result" -Value $Result -force
+    Return $Obj
     #$snmp.gettree('.1.3.6.1.2.1.1.1')
 }
 
-Function GetSMNPv3 ($Target,$OID,$Debug,$Test){
-    If ($Test){  #--[ If 1st user tests positive on 1st use, use it by setting the global variable below ]--
+Function GetSNMPv3 ($Obj,$ExtOption,$OID){
+   If ($Obj.v3User){  #--[ If set $true the main v3 user tested good so use it ]--
         $GetRequest1 = @{
-            UserName   = $Script:SMNPv3User
-            Target     = $Target
+            UserName   = $ExtOption.SNMPv3User
+            Target     = $Obj.IPAddress
             OID        = $OID.Split(",")[1]
             AuthType   = 'MD5'
-            AuthSecret = $Script:SNMPv3Secret
+            AuthSecret = $ExtOption.SNMPv3Secret
             PrivType   = 'DES'
-            PrivSecret = $Script:SNMPv3Secret
+            PrivSecret = $ExtOption.SNMPv3Secret
         }
         Try{
-            $Result = Invoke-SNMPv3Get @GetRequest1 -ErrorAction:Stop
-            If ($Result -like "*Exception*"){
-                $Script:v3UserTest = $False  
-            }Else{
-                $Script:v3UserTest = $True  #--[ Global v3 user variable ]--
-            }
+            $Result = Invoke-SNMPv3Get @GetRequest1 #-ErrorAction:Stop
         }Catch{
-            If ($Debug){
-                write-host $_.Exception.Message -ForegroundColor Cyan
-                write-host " -- SNMPv3 User 1 failed..." -ForegroundColor red
+            $Result = $_.Exception.Message
+            If ($ExtOption.Debug){
+                StatusMsg "SNMPv3 User 1 failed..." "red" $ExtOption
+                StatusMsg $_.Exception.Message "cyan" $ExtOption
             }
         }
     }Else{  #--[ User 1 has failed so use user 2 instead ]--
         $GetRequest2 = @{
-            UserName   = $Script:SMNPv3AltUser
+            UserName   = $ExtOption.SNMPv3AltUser
             Target     = $Target
             OID        = $OID.Split(",")[1]
+                 #--[ Auth and Priv Not needed ]--
             #AuthType   = 'MD5'
             #AuthSecret = $Script:SNMPv3Secret
             #PrivType   = 'DES'
@@ -230,21 +236,23 @@ Function GetSMNPv3 ($Target,$OID,$Debug,$Test){
         Try{
             $Result = Invoke-SNMPv3Get @GetRequest2 -ErrorAction:Stop
         }Catch{
-            If ($Result -like "*Exception*"){
-                write-host " -- SNMPv3 User 2 failed... No SNMPv3 access..." -ForegroundColor red
-                write-host $_.Exception.Message -ForegroundColor Blue
+            $Result = $_.Exception.Message
+            If ($ExtOption.Debug){
+                StatusMsg "SNMPv3 User 2 failed..." "red" $ExtOption
+                StatusMsg $_.Exception.Message "cyan" $ExtOption
             }
         }
     }
-    If ($Debug){
-        Write-Host "  -- SNMPv3 Debug: " -ForegroundColor Yellow -NoNewline
+
+    If ($ExtOption.Debug){
+        StatusMsg "  -- SNMPv3 Debug -- " 'Yellow' $ExtOption
         If ($Test){
-            Write-Host "SNMP User 2  " -ForegroundColor Green -NoNewline
+            StatusMsg "SNMP User 2  " -ForegroundColor Green $ExtOption
         }Else{
-            Write-Host "SNMP user 1  " -ForegroundColor Green -NoNewline
+            StatusMsg "SNMP user 1  " -ForegroundColor Green $ExtOption
         }
-        Write-Host $OID.Split(",")[0]"  " -ForegroundColor Cyan -NoNewline
-        Write-Host $Result    
+        StatusMsg $OID.Split(",")[0] "Cyan" $ExtOption
+        StatusMsg $Result "yellow" $ExtOption
     }
     Return $Result
 }
@@ -310,7 +318,7 @@ StatusMsg "Processing UPS Devices" "Yellow" $ExtOption
 $erroractionpreference = "stop"
 
 #--[ Close copies of Excel that PowerShell has open ]--
-If ($CloseOpen){
+If ($CloseOpen1){
     $ProcID = Get-CimInstance Win32_Process | Where-Object {$_.name -like "*excel*"}
     ForEach ($ID in $ProcID){  #--[ Kill any open instances to avoid issues ]--
         Foreach ($Proc in (get-process -id $id.ProcessId)){
@@ -384,56 +392,74 @@ $HtmlBody = @()
 $Count = $IPList.Count
 
 ForEach ($Target in $IPList){
+    $Obj = New-Object -TypeName psobject   #--[ Individual Target Device Result Collection ]--
+
     If ($Jagged){
         $Row = $Target[0]
         $Target = $Target[1]
     }
     $Current = $Row-3
-    If ($ExtOption.ConsoleState){Write-Host "`nCurrent Target  :"$Target"  ("$Current" of "$Count")" -ForegroundColor Yellow }
+
+    $Obj | Add-Member -MemberType NoteProperty -Name "IPAddress" -Value $Target -force
+    
+    If ($ExtOption.ConsoleState){
+        Write-Host "`nCurrent Target  :"$Target"  ("$Current" of "$Count")" -ForegroundColor Yellow 
+    }
    
-    $Obj = New-Object -TypeName psobject   #--[ Collection for Results ]--
     Try{
-        $HostLookup = (nslookup $Target $Script:DNS 2>&1) 
+        $HostLookup = (nslookup $Obj.IPAddress $ExtOption.DNS 2>&1) 
         $Obj | Add-Member -MemberType NoteProperty -Name "Hostname" -Value ($HostLookup[3].split(":")[1].TrimStart()).Split(".")[0] -force
         $Obj | Add-Member -MemberType NoteProperty -Name "HostnameLookup" -Value $True
     }Catch{
         $Obj | Add-Member -MemberType NoteProperty -Name "Hostname" -Value "Not Found" -force
         $Obj | Add-Member -MemberType NoteProperty -Name "HostnameLookup" -Value $False
     }
-    
-    $Obj | Add-Member -MemberType NoteProperty -Name "IPAddress" -Value $Target -force
 
-    If (Test-Connection -ComputerName $Target -count 1 -BufferSize 16 -Quiet){  #--[ Ping Test ]--
+    If (Test-Connection -ComputerName $Obj.IPAddress -count 1 -buffersize 16 -Quiet){  #--[ Ping target ]--
         $Obj | Add-Member -MemberType NoteProperty -Name "Connection" -Value "Online" -force
-        If ($ExtOption.ConsoleState){StatusMsg "Polling SNMP..." "Magenta" $ExtOption}
-        If ((!($Debug)) -and ($ExtOption.ConsoleState)){Write-Host "  Working." -NoNewline}
 
-        #--[ Test for SNMPv3.  Make sure to include leading comma  ]---------
-        $Test = GetSMNPv3 $Target ",1.3.6.1.2.1.1.8.0" $Debug $Script:v3UserTest
-        if ($Test -like "*TimeTicks*"){
-            $PortTest = "True"
-        }Else{
-            $PortTest = "False"
+        #--[ Test for SNMPv3 access.  Make sure to include leading comma on OID ]---------
+        If ($ExtOption.ConsoleState){
+            StatusMsg "Testing SNMPv3..." "Magenta" $ExtOption
         }
-        $Obj | Add-Member -MemberType NoteProperty -Name "SNMPv3" -Value $PortTest -force
-        If ((!($Debug)) -and ($ExtOption.Console)){Write-Host "." -NoNewline}
 
-        #--[ Test for SNMPv1 ]------------------------------------------------
-        $Test = GetSNMPv1 $Target "1.3.6.1.2.1.1.8.0" $Debug
-        if ($Test -like "*TimeTicks*"){
-            $PortTest = "True"
-        }Else{
-            $PortTest = "False"
+        If ((!($Debug)) -and ($ExtOption.ConsoleState)){
+            Write-Host "  Working." -NoNewline
         }
-        $Obj | Add-Member -MemberType NoteProperty -Name "SNMPv1" -Value $PortTest -force
+
+        $Obj | Add-Member -MemberType NoteProperty -Name "v3User1" -Value $True  #--[ Test for valid v3 user ]--
+        $Result = GetSNMPv3 $Obj $ExtOption ",1.3.6.1.2.1.1.8.0" 
+
+        if ($Result -like "*TimeTicks*"){
+            $Obj | Add-Member -MemberType NoteProperty -Name "v3User1" -Value $true -force
+            $Obj | Add-Member -MemberType NoteProperty -Name "SNMP" -Value $true -force
+        }Else{
+            $Obj | Add-Member -MemberType NoteProperty -Name "v3User1" -Value $False -force
+            $Obj | Add-Member -MemberType NoteProperty -Name "SNMP" -Value $True -force
+        }
+
+        If ((!($Debug)) -and ($ExtOption.Console)){
+            Write-Host "." -NoNewline
+        }
+
+        #--[ Test for SNMPv1 if v3 user failed ]------------------------------------------
+        If (!($Obj.SNMP)){
+            $Result = GetSNMPv1 $Obj $ExtOption "1.3.6.1.2.1.1.8.0" 
+            if ($Result -like "*TimeTicks*"){
+                $Obj | Add-Member -MemberType NoteProperty -Name "SNMP" -Value $True -force
+            }Else{
+                $Obj | Add-Member -MemberType NoteProperty -Name "SNMP" -Value $False -force
+            }
+        }
     }
 
-    #--[ Only process OIDs if online PLUS SNMPv3 is good ]--------------------------
-    If (($Obj.Connection -eq "Online") -and ($Obj.SNMPv3 -ne "False")){  
+    #--[ Only process OIDs if online and SNMPv3 are both good ]--------------------------
+    If (($Obj.Connection -eq "Online")){ #} -and ($Obj.SNMPv3)){  
         ForEach ($Item in $OIDArray){            
-            $Result = GetSMNPv3 $Target $Item $Debug $Script:v3UserTest
+            $Result = GetSNMPv3 $Obj $ExtOption $Item 
             If ($Debug){
-                Write-Host ' '$Item[0]'='$Result -ForegroundColor yellow
+                $Msg = "DEBUG -- "+$Item[0]+'='+$Result
+                StatusMsg $Msg "yellow" $ExtOption
             }Else{
                 If ($ExtOption.ConsoleState){Write-Host "." -NoNewline}   #--[ Writes a string of dots to show operation is proceeding ]--
             }
@@ -479,7 +505,11 @@ ForEach ($Target in $IPList){
                     $Obj | Add-Member -MemberType NoteProperty -Name "LastTestResult" -Value $SaveVal -force
                 }    
                 "Location" {   #--[ Location field on device must be formatted as "facility;IDF;address" separated by a semicolon ]--
-                    $SaveVal = $Result.Value.ToString()
+                    Try{
+                        $SaveVal = $Result.Value.ToString()
+                    }Catch{
+                        $SaveVal = ";;"
+                    }
                     $Obj | Add-Member -MemberType NoteProperty -Name "Facility" -Value $SaveVal.Split(";")[0] -force
                     $Obj | Add-Member -MemberType NoteProperty -Name "IDF" -Value $SaveVal.Split(";")[1] -force
                     $Obj | Add-Member -MemberType NoteProperty -Name "Location" -Value $SaveVal.Split(";")[2] -force
@@ -554,6 +584,7 @@ ForEach ($Target in $IPList){
                 }   #>         
             }        
         }    
+
         #--[ Adjustments ]------------------------
         If ($Obj.HostName -like "*chill*"){
             $Obj | Add-Member -MemberType NoteProperty -Name "UPSModelNum" -Value $Obj.NMCModelNum -force
@@ -576,7 +607,6 @@ ForEach ($Target in $IPList){
             #$MfgWeek = $Obj.UPSSerial.Substring(4,2)
             $Obj | Add-Member -MemberType NoteProperty -Name "UPSAge" -Value ([int]((New-TimeSpan -Start ([datetime]$Obj.UPSMfgDate) -End $Today).days/365)) -force         
         }
-
     }Else{
         $Offline ++   
         $Obj | Add-Member -MemberType NoteProperty -Name "Connection" -Value "Offline" -force
@@ -584,7 +614,8 @@ ForEach ($Target in $IPList){
     }
 
     If ($ExtOption.ConsoleState){
-        Write-host " "
+        Write-host ""`
+        StatusMsg "Console Mode: Displaying Results..." "Yellow" $ExtOption
         $Obj
     }    
 
@@ -619,7 +650,8 @@ ForEach ($Target in $IPList){
     $HtmlData += $Obj.LastTestResult+'</strong></font></td>'
     $HtmlData += '<td>'+$Obj.BattRunTime+'</td>'
     $HtmlData += '</tr>'
-    $HtmlReport += $HtmlData      
+    $HtmlReport += $HtmlData   
+    $Obj = ""   
 }
 
 #--[ HTML Email Report ]--
@@ -695,8 +727,8 @@ $DateTime = Get-Date -Format MM-dd-yyyy_hh.mm.ss
 $Report = ($SourcePath+"\Reports\UPS-Status_"+$DateTime+".html")
 Add-Content -Path $Report -Value $HtmlReport
 
-#--[ Use to load the report in the default browser ]--
-# iex "$PSScriptRoot\temp.html"
+#--[ Use this to load the report in the default browser ]--
+# iex $Report
 
 SendEmail $HtmlReport $ExtOption 
 If ($ExtOption.ConsoleState){Write-host "`n--- Completed ---" -foregroundcolor red}
@@ -714,11 +746,11 @@ If ($ExtOption.ConsoleState){Write-host "`n--- Completed ---" -foregroundcolor r
 	<EmailRecipient>it@company.org</EmailRecipient>
     </General>
     <Credentials>
-	<PasswordFile>passfile.txt</PasswordFile>
-	<KeyFile>c:\keyfile.txt</KeyFile>
-	<SMNPv3User>snmpv3user</SMNPv3User>
-        <SMNPv3AltUser>snmpv3altusername</SMNPv3AltUser>
-	<!--	<SNMPv3Secret>bahbahblacksheep</SNMPv3Secret>  -->
+    	<PasswordFile>passfile.txt</PasswordFile>
+	    <KeyFile>c:\keyfile.txt</KeyFile>
+	    <SNMPv3User>snmpv3user</SNMPv3User>
+        <SNMPv3AltUser>snmpv3altusername</SNMPv3AltUser>
+		<SNMPv3Secret>bahbahblacksheep</SNMPv3Secret>  
         <SNMPv3Secret>mysnmp3pass</SNMPv3Secret>  
     </Credentials>
 </Settings>    
