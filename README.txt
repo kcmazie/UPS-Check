@@ -37,5 +37,10 @@ Pulls status from a list of APC UPS devices and emails an HTML Report.
                    : v6.0 - 02-12-24 - Retooled Html email report.  Added self test failed counts.  Added saved reports.
                    : v6.1 - 02-13-24 - Added missing external config entries.
                    : v7.0 - 02-16-24 - Fixed major bugs after moving config to external XML.
+                   : v7.1 - 02-27-24 - Added exclusion list
+                   : v7.2 - 03-05-24 - Fixed bugs found after PC crash.  Altered email sending options.
+                   : v7.3 - 03-25-24 - Removed unknown status for everything that doesnt return that status from SNMP
+                   : v7.4 - 12-24-24 - Fixed a number of typos.  Fixed detection of excluded IP addresses.
+                   :                   
                    :                   
 ==============================================================================#>
