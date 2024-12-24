@@ -38,6 +38,10 @@ Param(
                    : v6.0 - 02-12-24 - Retooled Html email report.  Added self test failed counts.  Added saved reports.
                    : v6.1 - 02-13-24 - Added missing external config entries.
                    : v7.0 - 02-16-24 - Fixed major bugs after moving config to external XML.
+                   : v7.1 - 02-27-24 - Added exclusion list
+                   : v7.2 - 03-05-24 - Fixed bugs found after PC crash.  Altered email sending options.
+                   : v7.3 - 03-25-24 - Removed unknown status for everything that doesnt return that status from SNMP
+                   : v7.4 - 12-24-24 - Fixed a number of typos.  Fixed detection of excluded IP addresses.
                    :                   
 ==============================================================================#>
 
@@ -49,73 +53,79 @@ Clear-Host
 $DateTime = Get-Date -Format MM-dd-yyyy_HHmmss 
 $Today = Get-Date -Format MM-dd-yyyy 
 $Script:v3UserTest = $False
+$CloseAnyOpenXL = $false
 
 #--[ Runtime tweaks for testing ]--
 $Console = $True
 $Debug = $false
-$CloseOpen = $true
 
 #------------------------------------------------------------
 #
-$erroractionpreference = "stop"
+$ErrorActionPreference = "stop"
 try{
     if (!(Get-Module -Name SNMPv3)) {
         Get-Module -ListAvailable SNMPv3 | Import-Module | Out-Null
     }
     Install-Module -Name SNMPv3
 }Catch{
-
+    Write-host "Error installing SNMP module" -ForegroundColor red
 }
 
 #==[ Functions ]===============================================================
-Function SendEmail ($MessageBody,$ExtOption) {   
-    $ErrorActionPreference = "Stop"
-    $Smtp = New-Object Net.Mail.SmtpClient($ExtOption.SmtpServer,25) 
-    Try{  
-        If ($Env:Username.SubString(0,1) -eq "a"){
-            $ThisUser = ($Env:Username.SubString(1))+"@"+$Env:USERDNSDOMAIN 
-        }Else{
-            $ThisUser = $Env:USERNAME+"@"+$Env:USERDNSDOMAIN 
-        }
-    }Catch{
-        $ThisUser = "UPS_Status"
-    }
+Function SendEmail ($MessageBody,$ExtOption) { 
+    $Smtp = New-Object Net.Mail.SmtpClient($ExtOption.SmtpServer,$ExtOption.SmtpPort) 
     $Email = New-Object System.Net.Mail.MailMessage  
     $Email.IsBodyHTML = $true
-    $Email.From = $ThisUser
-
-    If ($ExtOption.ConsoleState){  #--[ If running out of an IDE console, send to the user only for testing ]--
-        $ThisUser = $Env:USERNAME+"@"+$Env:USERDNSDOMAIN 
-        $Email.To.Add($ThisUser) 
+    $Email.From = $ExtOption.EmailSender
+    If ($ExtOption.ConsoleState){  #--[ If running out of an IDE console, send only to the user for testing ]-- 
+        $Email.To.Add($ExtOption.EmailAltRecipient)  
     }Else{
-        If ($ExtOption.Alert){
-            $Email.To.Add($ExtOption.EmailRecipient)  #--[ If a device failed self-test always send to group ]--
-        }Else{
-            If ($ExtOption.EmailRecipient -eq ""){
-                $Email.To.Add($ThisUser) 
-            }Else{    
-                $Email.To.Add($ThisUser)   #--[ In case this user isn't part of the group email ]--        
-                #$Email.To.Add($ExtOption.EmailRecipient)  #--[ Uncomment to ALWAYS send to group ]--
-            }
+        If ($ExtOption.Alert){  #--[ If a device failed self-test or trigger day is matched send to main recipient ]--
+            $Email.To.Add($ExtOption.EmailRecipient)  
+           # $Email.To.Add($ExtOption.EmailAltRecipient)   #--[ In case this user isn't part of the group email ]--  
         }
     }
+
     $Email.Subject = "UPS Status Report"
     $Email.Body = $MessageBody
+    If ($ExtOption.Debug){
+        $Msg="-- Email Parameters --" 
+        StatusMsg $Msg "yellow" $ExtOption
+        $Msg="Error Msg     = "+$_.Error.Message
+        StatusMsg $Msg "yellow" $ExtOption
+        $Msg="Exception Msg = "+$_.Exception.Message
+        StatusMsg $Msg "yellow" $ExtOption
+        $Msg="Local Sender  = "+$ThisUser
+        StatusMsg $Msg "yellow" $ExtOption
+        $Msg="Recipient     = "+$ExtOption.EmailRecipient
+        StatusMsg $Msg "yellow" $ExtOption
+        $Msg="SMTP Server   = "+$ExtOption.SmtpServer
+        StatusMsg $Msg "yellow" $ExtOption
+
+    }
+    $ErrorActionPreference = "stop"
     Try {
         $Smtp.Send($Email)
         If ($ExtOption.ConsoleState){Write-Host `n"--- Email Sent ---" -ForegroundColor red }
     }Catch{
         Write-host "-- Error sending email --" -ForegroundColor Red
         Write-host "Error Msg     = "$_.Error.Message
+        StatusMsg  $_.Error.Message "red" $ExtOption
         Write-host "Exception Msg = "$_.Exception.Message
+        StatusMsg  $_.Exception.Message "red" $ExtOption
         Write-host "Local Sender  = "$ThisUser
         Write-host "Recipient     = "$ExtOption.EmailRecipient
         Write-host "SMTP Server   = "$ExtOption.SmtpServer
+        add-content -path $psscriptroot -value  $_.Error.Message
     }
 }
+
 Function StatusMsg ($Msg, $Color, $ExtOption){
     If ($Null -eq $Color){
         $Color = "Magenta"
+    }
+    If ($ExtOption.Debug){
+        Add-Content -Path "$PSScriptRoot\error.log" -Value $Msg
     }
     Write-Host "-- Script Status: $Msg" -ForeGroundColor $Color
     $Msg = ""
@@ -128,6 +138,7 @@ Function LoadConfig ($ExtOption,$ConfigFile){  #--[ Read and load configuration 
         $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "SourcePath" -Value $Config.Settings.General.SourcePath
         $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "ExcelSourceFile" -Value $Config.Settings.General.ExcelSourceFile
         $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "DNS" -Value $Config.Settings.General.DNS
+        $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "DayOfWeek" -Value $Config.Settings.General.DayOfWeek
         $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "SNMPv3User" -Value $Config.Settings.Credentials.SNMPv3User
         $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "SNMPv3AltUser" -Value $Config.Settings.Credentials.SNMPv3AltUser
         $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "SNMPv3Secret" -Value $Config.Settings.Credentials.SNMPv3Secret
@@ -136,13 +147,18 @@ Function LoadConfig ($ExtOption,$ConfigFile){  #--[ Read and load configuration 
         $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "IPlistFile" -Value $Config.Settings.General.IPListFile
         $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "SmtpServer" -Value $Config.Settings.General.SmtpServer
         $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "EmailRecipient" -Value $Config.Settings.General.EmailRecipient
+        $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "EmailSender" -Value $Config.Settings.General.EmailSender
         $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "HNPattern" -Value $Config.Settings.General.HNPattern
+        $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "Exclusions" -Value $Config.Settings.Exclusions.Exclude
         $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "Debug" -Value $False
     }Else{
         StatusMsg "MISSING XML CONFIG FILE.  File is required.  Script aborted..." " Red" $ExtOption
         break;break;break
     }
-   Return $ExtOption
+    If ((Get-Date).DayOfWeek -eq $ExtOption.DayOfWeek){  #--[ Triggers email to group on selected day of week ]--
+        $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "Alert" -Value $True
+    }
+    Return $ExtOption
 }
 
 Function GetConsoleHost ($ExtOption){  #--[ Detect if we are using a script editor or the console ]--
@@ -196,10 +212,8 @@ Function GetSNMPv1 ($Obj,$ExtOption,$OID) {
         $Result = $_.Exception.Message        
     }
     If ($ExtOption.Debug){ write-host "SNMpv1 Debug :" $Result }
-#    Return $Result
     $Obj | Add-Member -MemberType NoteProperty -Name "Result" -Value $Result -force
     Return $Obj
-    #$snmp.gettree('.1.3.6.1.2.1.1.1')
 }
 
 Function GetSNMPv3 ($Obj,$ExtOption,$OID){
@@ -213,6 +227,7 @@ Function GetSNMPv3 ($Obj,$ExtOption,$OID){
             PrivType   = 'DES'
             PrivSecret = $ExtOption.SNMPv3Secret
         }
+
         Try{
             $Result = Invoke-SNMPv3Get @GetRequest1 #-ErrorAction:Stop
         }Catch{
@@ -247,9 +262,9 @@ Function GetSNMPv3 ($Obj,$ExtOption,$OID){
     If ($ExtOption.Debug){
         StatusMsg "  -- SNMPv3 Debug -- " 'Yellow' $ExtOption
         If ($Test){
-            StatusMsg "SNMP User 2  " -ForegroundColor Green $ExtOption
+            StatusMsg "SNMP User 2  " "Green" $ExtOption
         }Else{
-            StatusMsg "SNMP user 1  " -ForegroundColor Green $ExtOption
+            StatusMsg "SNMP user 1  " "Green" $ExtOption
         }
         StatusMsg $OID.Split(",")[0] "Cyan" $ExtOption
         StatusMsg $Result "yellow" $ExtOption
@@ -313,12 +328,15 @@ $ExtOption = GetConsoleHost $ExtOption
 If ($ExtOption.ConsoleState){ 
     StatusMsg $ExtOption.ConsoleMessage "Cyan" $ExtOption
 }
+If ($Debug){
+    $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "Debug" -Value $True
+}
 
 StatusMsg "Processing UPS Devices" "Yellow" $ExtOption
 $erroractionpreference = "stop"
 
 #--[ Close copies of Excel that PowerShell has open ]--
-If ($CloseOpen1){
+If ($CloseAnyOpenXL){
     $ProcID = Get-CimInstance Win32_Process | Where-Object {$_.name -like "*excel*"}
     ForEach ($ID in $ProcID){  #--[ Kill any open instances to avoid issues ]--
         Foreach ($Proc in (get-process -id $id.ProcessId)){
@@ -330,6 +348,7 @@ If ($CloseOpen1){
         }
     }
 }
+
 
 #--[ Create new Excel COM object ]--
 $Excel = New-Object -ComObject Excel.Application -ErrorAction Stop
@@ -371,6 +390,8 @@ If (Test-Path -Path ($SourcePath+"\"+$ExtOption.IPListFile) -PathType Leaf){
 $Excel.DisplayAlerts = $false
 $WorkBook.Close($true)
 $Excel.Quit()
+$Excel.Quit()
+$Excel.Quit()
 
 ForEach ($Target in $IPList){  #--[ Are we pulling from Excel or a text file?  Jagged has row numbers from Excel ]--
     if ($Target.length -eq 2){
@@ -386,6 +407,7 @@ $TestPass = 0
 $TestFail = 0
 $TestUnknown = 0
 $Offline = 0
+$Excluded = 0
 $HtmlHeader = @() 
 $HtmlReport = @() 
 $HtmlBody = @()
@@ -415,7 +437,10 @@ ForEach ($Target in $IPList){
         $Obj | Add-Member -MemberType NoteProperty -Name "HostnameLookup" -Value $False
     }
 
-    If (Test-Connection -ComputerName $Obj.IPAddress -count 1 -buffersize 16 -Quiet){  #--[ Ping target ]--
+    #--[ Read list of excluded IP's from XML ]--
+    If ($ExtOption.Exclusions.Split(",") -contains $Obj.IPAddress){
+        $Obj | Add-Member -MemberType NoteProperty -Name "Excluded" -Value $true -force
+    }ElseIf (Test-Connection -ComputerName $Obj.IPAddress -count 1 -buffersize 16 -Quiet){  #--[ Ping target ]--
         $Obj | Add-Member -MemberType NoteProperty -Name "Connection" -Value "Online" -force
 
         #--[ Test for SNMPv3 access.  Make sure to include leading comma on OID ]---------
@@ -472,6 +497,7 @@ ForEach ($Target in $IPList){
             }
 
             #--[ Clean Up Results ]-------------------------------------------------
+            $erroractionpreference = "silentlycontinue"
             Switch ($Item[0]) {
                 "HostName" {   #--[ Extract and compare hostname ]--   
                     If ($Obj.Hostname -match $Result.Value.ToString()){
@@ -489,17 +515,20 @@ ForEach ($Target in $IPList){
                 "LastTestResult" {   #--[ Extract last test result ]--  
                     Switch ($Result.Value){
                         "1" {
-                            $SaveVal = "Passed"    
+                            $SaveVal = "Passed"   
+                            $TestPass ++ 
                         }
                         "2" {
                             $SaveVal = "Failed"
                             $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "Alert" -Value $True
+                            $TestFail ++
                         }
                         "3" {
                             $SaveVal = "Unknown"
+                            $TestUnknown ++
                         }
                         Default {
-                            $SaveVal = "Unknown"
+                            #--[ Do nothing ]--
                         }
                     }
                     $Obj | Add-Member -MemberType NoteProperty -Name "LastTestResult" -Value $SaveVal -force
@@ -521,7 +550,7 @@ ForEach ($Target in $IPList){
                         $Result = $Result.Value.ToString()
                         $RunHours = $Result.Split(":")[0]
                         $RunMins = $Result.Split(":")[1]
-                        #$RunSecs = $Result.Split(":")[2]
+                        #$RunSecs = $Result.Split(":")[2]  #--[ We don't care about seconds ]--
                         $SaveVal = $RunHours+" Hrs "+$RunMins+" Min"
                     }
                     $Obj | Add-Member -MemberType NoteProperty -Name "BattRunTime" -Value $SaveVal -force
@@ -566,7 +595,7 @@ ForEach ($Target in $IPList){
                         $SaveVal = "existing"
                     }Else{
                         $SaveVal = $Result.Value.ToString()
-                    }
+                    }                  
                     If ($SaveVal -like "NoSuch*"){
                         $SaveVal = ""
                     }ElseIf ($Item -like "*date*"){    #--[ Set dates to a uniform format ]--
@@ -581,7 +610,7 @@ ForEach ($Target in $IPList){
                         }
                     }
                     $Obj | Add-Member -MemberType NoteProperty -Name $Item[0] -Value $SaveVal -force
-                }   #>         
+                }            
             }        
         }    
 
@@ -591,6 +620,7 @@ ForEach ($Target in $IPList){
             # $Obj | Add-Member -MemberType NoteProperty -Name "UPSSerial" -Value $Obj.NMCSerial -force  #--[ unverified ]--
             $Obj | Add-Member -MemberType NoteProperty -Name "UPSSerial" -Value "Unknown" -force  
             # $Obj | Add-Member -MemberType NoteProperty -Name "UPSAge" -Value ([int]((New-TimeSpan -Start ([datetime]$Obj.NMCMfgDate) -End $Today).days/365)) -force         
+            $Obj | Add-Member -MemberType NoteProperty -Name "LastTestResult" -Value "N/A" -force
         }
         If ($Obj.UPSModelName -like "*Symmetra*"){
             $Obj | Add-Member -MemberType NoteProperty -Name "UPSModelNum" -Value $Obj.UPSModelName -force
@@ -608,14 +638,20 @@ ForEach ($Target in $IPList){
             $Obj | Add-Member -MemberType NoteProperty -Name "UPSAge" -Value ([int]((New-TimeSpan -Start ([datetime]$Obj.UPSMfgDate) -End $Today).days/365)) -force         
         }
     }Else{
-        $Offline ++   
-        $Obj | Add-Member -MemberType NoteProperty -Name "Connection" -Value "Offline" -force
-        If ($ExtOption.ConsoleState){Write-host "--- OFFLINE ---" -foregroundcolor "Red"}
+        If ($Obj.Excluded){
+            $Excluded ++   
+            StatusMsg "Target is on exclusion list.  Bypassing..." "Cyan" $ExtOption
+            $Obj | Add-Member -MemberType NoteProperty -Name "Connection" -Value "Excluded" -force
+        }Else{
+            $Offline ++   
+            $Obj | Add-Member -MemberType NoteProperty -Name "Connection" -Value "Offline" -force
+            If ($ExtOption.ConsoleState){Write-host "--- OFFLINE ---" -foregroundcolor "Red"}
+        }
     }
 
-    If ($ExtOption.ConsoleState){
-        Write-host ""`
-        StatusMsg "Console Mode: Displaying Results..." "Yellow" $ExtOption
+    If (($ExtOption.ConsoleState) -and (!($Obj.Excluded))){
+        Write-host ""
+        StatusMsg "Console Mode enabled, Displaying Results..." "Magenta" $ExtOption
         $Obj
     }    
 
@@ -624,12 +660,18 @@ ForEach ($Target in $IPList){
     $HtmlData += '<td>'+$Obj.HostName+'</td>'
     $HtmlData += '<td>'+$Obj.IPAddress+'</td>'
     $HtmlData += '<td>'+$Obj.Facility+'</td>'  
-    If ($obj.Connection -eq "OffLine"){
-        $HtmlData += '<td><strong><font color=red>' #+$Obj.Connection+'</strong></font></td>'
-    }Else{
-        $HtmlData += '<td><strong><font color=green>'
-    }
-    $HtmlData += $Obj.Connection+'</strong></font></td>'
+
+    Switch ($obj.Connection){
+        "OffLine"{
+            $HtmlData += '<td><strong><font color=red>Offline</strong></font></td>'
+        }
+        "Excluded"{
+            $HtmlData += '<td><strong><font color=orange>Excluded</strong></font></td>'
+        }
+        Default {
+            $HtmlData +=  '<td><strong><font color=Green>'+$Obj.Connection+'</strong></font></td>'
+        }
+    }  
     
     $HtmlData += '<td>'+$Obj.MFG+'</td>'
     $HtmlData += '<td>'+$Obj.UPSModelNum+'</td>'
@@ -638,14 +680,11 @@ ForEach ($Target in $IPList){
     $HtmlData += '<td>'+$Obj.UPSAge+'</td>'
     $HtmlData += '<td>'+$Obj.LastTestDate+'</td>'
     If ($Obj.LastTestResult -eq "Passed"){
-        $HtmlData += '<td><strong><font color=Green>' #+$Obj.LastTestResult+'</strong></font></td>'
-        $TestPass ++
+        $HtmlData += '<td><strong><font color=Green>' 
     }ElseIf ($Obj.LastTestResult -eq "Failed"){
         $HtmlData += '<td><strong><font color=Red>'
-        $TestFail ++
     }Else{
         $HtmlData += '<td><strong><font color=Orange>'
-        $TestUnknown ++
     }
     $HtmlData += $Obj.LastTestResult+'</strong></font></td>'
     $HtmlData += '<td>'+$Obj.BattRunTime+'</td>'
@@ -675,23 +714,23 @@ $HtmlBody +='
                 <center>
                     <table border-collapse="collapse" border="0" cellspacing="0" cellpadding="0" width="100%" bgcolor="#E6E6E6" bordercolor="black">
                         <td border="0"><strong><center>Total Devices = '+$Count+'</center></td>'
-If ($Offline -gt 0){
-            $HtmlBody +='<td><font color="red"><strong><center>Offline = '+$Offline+'</center></td>'
-}Else{
-            $HtmlBody +='<td><font color="green"><strong><center>Offline = '+$Offline+'</center></td>'
-}
-            $HtmlBody +='<td><font color="green"><strong><center>Self-Test Passes = '+$TestPass+'</center></td>'
-If ($TestFail -gt 0){
-            $HtmlBody +='<td><font color="red"><strong><center>Self-Test Failures = '+$TestFail+'</center></td>'
-}Else{
-            $HtmlBody +='<td><font color="green"><strong><center>Self-Test Failures = '+$TestFail+'</center></td>'
-}
-If ($TestUnknown -gt 0){                     
-            $HtmlBody +='<td><font color="orange"><strong><center>Unknow Status = '+$TestUnknown+'</center></td>'
-}Else{
-            $HtmlBody +='<td><font color="green"><strong><center>Unknow Status = '+$TestUnknown+'</center></td>'
-}
-$HtmlBody +='
+                        If ($Offline -gt 0){
+                            $HtmlBody +='<td><font color="red"><strong><center>Offline = '+$Offline+'</center></td>'
+                        }Else{
+                            $HtmlBody +='<td><font color="green"><strong><center>Offline = '+$Offline+'</center></td>'
+                        }
+                        $HtmlBody +='<td><font color="green"><strong><center>Self-Test Passes = '+$TestPass+'</center></td>'
+                        If ($TestFail -gt 0){
+                            $HtmlBody +='<td><font color="red"><strong><center>Self-Test Failures = '+$TestFail+'</center></td>'
+                        }Else{
+                            $HtmlBody +='<td><font color="green"><strong><center>Self-Test Failures = '+$TestFail+'</center></td>'
+                        }
+                        If ($TestUnknown -gt 0){                     
+                            $HtmlBody +='<td><font color="orange"><strong><center>Unknown Status = '+$TestUnknown+'</center></td>'
+                        }Else{
+                            $HtmlBody +='<td><font color="green"><strong><center>Unknown Status = '+$TestUnknown+'</center></td>'
+                        }
+                        $HtmlBody +='
                     </table>
                 </center>
             </td>
@@ -722,15 +761,25 @@ $HtmlReport += '</table></div></body></html>'
 If (!(Test-Path -PathType container ($SourcePath+"\Reports"))){
       New-Item -ItemType Directory -Path ($PSScriptRoot+"\Reports") -Force
 }
-Get-ChildItem -Path ($SourcePath+"\Reports") | Where-Object {(-not $_.PsIsContainer) -and ($_.Name -like "*html*")} | Sort-Object -Descending -Property LastTimeWrite | Select-Object -Skip 10 | Remove-Item
+Get-ChildItem -Path ($SourcePath+"\Reports") | Where-Object {(-not $_.PsIsContainer) -and ($_.Name -like "*html*")} | Sort-Object -Descending -Property LastTimeWrite | Select-Object -Skip 10 | Remove-Item | Out-Null
 $DateTime = Get-Date -Format MM-dd-yyyy_hh.mm.ss 
 $Report = ($SourcePath+"\Reports\UPS-Status_"+$DateTime+".html")
-Add-Content -Path $Report -Value $HtmlReport
+Add-Content -Path $Report -Value $HtmlReport#>
+
+#--[ Set the alternate email recipient if running out of an IDE console for testing ]-- 
+If ($Env:Username.SubString(0,1) -eq "a"){       #--[ Filter out admin accounts ]--
+    $ThisUser = ($Env:Username.SubString(1))+"@"+$Env:USERDNSDOMAIN 
+    $ExtOption | Add-Member -MemberType NoteProperty -Name "EmailAltRecipient" -Value $ThisUser -force
+}Else{
+    $ThisUser = $Env:USERNAME+"@"+$Env:USERDNSDOMAIN 
+    $ExtOption | Add-Member -MemberType NoteProperty -Name "EmailAltRecipient" -Value $ThisUser -force
+}
+
+SendEmail $HtmlReport $ExtOption 
 
 #--[ Use this to load the report in the default browser ]--
 # iex $Report
 
-SendEmail $HtmlReport $ExtOption 
 If ($ExtOption.ConsoleState){Write-host "`n--- Completed ---" -foregroundcolor red}
 
 
@@ -743,8 +792,14 @@ If ($ExtOption.ConsoleState){Write-host "`n--- Completed ---" -foregroundcolor r
 		<DNS>10.1.1.1</DNS>
         <IPListFile>IP-List.txt</IPListFile>
         <SmtpServer>mail.company.org</SmtpServer>
-	<EmailRecipient>it@company.org</EmailRecipient>
+        <EmailRecipient>it@company.org</EmailRecipient>
+        <EmailSender>ups@company.org</EmailSender>
+   		<HNPattern>UPS</HNPattern>
+   		<DayOfWeek>Sunday</DayOfWeek>
     </General>
+    <Exclusions>
+		<Exclude>10.10.10.21,10.10.120.22,10.10.12.23</Exclude>
+	</Exclusions>
     <Credentials>
     	<PasswordFile>passfile.txt</PasswordFile>
 	    <KeyFile>c:\keyfile.txt</KeyFile>
