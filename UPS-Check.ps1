@@ -28,39 +28,36 @@ Param(
                    :   not limited to the following:
                    : 
     Last Update by : Kenneth C. Mazie                                           
-   Version History : v1.0 - 08-16-22 - Original 
-    Change History : v2.0 - 09-00-22 - Numerous operational & bug fixes prior to v3.
-                   : v3.1 - 09-15-22 - Cleaned up final version for posting.
-                   : v4.0 - 04-12-23 - Too many changes to list
-                   : v4.1 - 07-03-23 - Added age and LDOS dates. 
-                   : v5.0 - 01-17-24 - Fixed DNS lookup.  Fixed last test result.  Fixed color coding of hostname for
-                   :                   numerous events.  Added hostname cell comments to describe color coding.
-                   : v6.0 - 02-12-24 - Retooled Html email report.  Added self test failed counts.  Added saved reports.
-                   : v6.1 - 02-13-24 - Added missing external config entries.
-                   : v7.0 - 02-16-24 - Fixed major bugs after moving config to external XML.
-                   : v7.1 - 02-27-24 - Added exclusion list
-                   : v7.2 - 03-05-24 - Fixed bugs found after PC crash.  Altered email sending options.
-                   : v7.3 - 03-25-24 - Removed unknown status for everything that doesnt return that status from SNMP
-                   : v7.4 - 12-24-24 - Fixed a number of typos.  Fixed detection of excluded IP addresses.
+   Version History : v1.00 - 08-16-22 - Original 
+    Change History : v2.00 - 09-00-22 - Numerous operational & bug fixes prior to v3.
+                   : v3.10 - 09-15-22 - Cleaned up final version for posting.
+                   : v4.00 - 04-12-23 - Too many changes to list
+                   : v4.10 - 07-03-23 - Added age and LDOS dates. 
+                   : v5.00 - 01-17-24 - Fixed DNS lookup.  Fixed last test result.  Fixed color coding of hostname for
+                   :                    numerous events.  Added hostname cell comments to describe color coding.
+                   : v6.00 - 02-12-24 - Retooled Html email report.  Added self test failed counts.  Added saved reports.
+                   : v6.10 - 02-13-24 - Added missing external config entries.
+                   : v7.00 - 02-16-24 - Fixed major bugs after moving config to external XML.
+                   : v7.10 - 02-27-24 - Added exclusion list
+                   : v7.20 - 03-05-24 - Fixed bugs found after PC crash.  Altered email sending options.
+                   : v7.30 - 03-25-24 - Removed unknown status for everything that doesnt return that status from SNMP
+                   : v7.40 - 12-24-24 - Fixed a number of typos.  Fixed detection of excluded IP addresses.
+                   : v7.50 - 05-19-25 - Adjusted the way email sends.  Added try-catch for email and log file.
                    :                   
 ==============================================================================#>
-
 #Requires -version 5
-##equires -Modules @{ ModuleName="SNMPv3"; ModuleVersion="1.1.1" }
 Clear-Host 
 
 #--[ Variables ]---------------------------------------------------------------
 $DateTime = Get-Date -Format MM-dd-yyyy_HHmmss 
 $Today = Get-Date -Format MM-dd-yyyy 
-$Script:v3UserTest = $False
 $CloseAnyOpenXL = $false
 
 #--[ Runtime tweaks for testing ]--
-$Console = $True
-$Debug = $false
-
+$Console = $False
+$Debug = $False
 #------------------------------------------------------------
-#
+
 $ErrorActionPreference = "stop"
 try{
     if (!(Get-Module -Name SNMPv3)) {
@@ -77,18 +74,30 @@ Function SendEmail ($MessageBody,$ExtOption) {
     $Email = New-Object System.Net.Mail.MailMessage  
     $Email.IsBodyHTML = $true
     $Email.From = $ExtOption.EmailSender
-    If ($ExtOption.ConsoleState){  #--[ If running out of an IDE console, send only to the user for testing ]-- 
-        $Email.To.Add($ExtOption.EmailAltRecipient)  
-    }Else{
-        If ($ExtOption.Alert){  #--[ If a device failed self-test or trigger day is matched send to main recipient ]--
-            $Email.To.Add($ExtOption.EmailRecipient)  
-           # $Email.To.Add($ExtOption.EmailAltRecipient)   #--[ In case this user isn't part of the group email ]--  
-        }
-    }
-
     $Email.Subject = "UPS Status Report"
     $Email.Body = $MessageBody
-    If ($ExtOption.Debug){
+    $ErrorActionPreference = "stop"
+    Try {  #--[ If running out of an IDE console, in debug, or alwaysalt modes, send only to the alt user for testing ]-- 
+        If (($ExtOption.ConsoleState -or $ExtOption.Debug) -or ($ExtOption.AlwaysAlt -like "*True*")){
+            $Email.To.Add($ExtOption.EmailAltRecipient)  
+            $Smtp.Send($Email)
+            If ($ExtOption.ConsoleState){Write-Host `n"--- Email Sent ---" -ForegroundColor red }
+        }Else{
+            If ($ExtOption.Alert){  #--[ If a device failed self-test or trigger day is matched send to main recipient ]--     
+                $Email.To.Add($ExtOption.EmailRecipient)          
+                $Smtp.Send($Email)
+                If ($ExtOption.ConsoleState){Write-Host `n"--- Email Sent ---" -ForegroundColor red }     
+            }
+        }
+    }Catch{
+        $ErrorMessage = $_.Error.Message
+        $ExceptionMsg = $_.Exception.Message
+        $Failed = $True
+    }
+    If ($ExtOption.Debug -or $Failed){
+        If ($Failed){
+            StatusMsg "-- Error sending email --" "Red" $ExtOption
+        }
         $Msg="-- Email Parameters --" 
         StatusMsg $Msg "yellow" $ExtOption
         $Msg="Error Msg     = "+$_.Error.Message
@@ -101,22 +110,6 @@ Function SendEmail ($MessageBody,$ExtOption) {
         StatusMsg $Msg "yellow" $ExtOption
         $Msg="SMTP Server   = "+$ExtOption.SmtpServer
         StatusMsg $Msg "yellow" $ExtOption
-
-    }
-    $ErrorActionPreference = "stop"
-    Try {
-        $Smtp.Send($Email)
-        If ($ExtOption.ConsoleState){Write-Host `n"--- Email Sent ---" -ForegroundColor red }
-    }Catch{
-        Write-host "-- Error sending email --" -ForegroundColor Red
-        Write-host "Error Msg     = "$_.Error.Message
-        StatusMsg  $_.Error.Message "red" $ExtOption
-        Write-host "Exception Msg = "$_.Exception.Message
-        StatusMsg  $_.Exception.Message "red" $ExtOption
-        Write-host "Local Sender  = "$ThisUser
-        Write-host "Recipient     = "$ExtOption.EmailRecipient
-        Write-host "SMTP Server   = "$ExtOption.SmtpServer
-        add-content -path $psscriptroot -value  $_.Error.Message
     }
 }
 
@@ -147,6 +140,8 @@ Function LoadConfig ($ExtOption,$ConfigFile){  #--[ Read and load configuration 
         $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "IPlistFile" -Value $Config.Settings.General.IPListFile
         $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "SmtpServer" -Value $Config.Settings.General.SmtpServer
         $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "EmailRecipient" -Value $Config.Settings.General.EmailRecipient
+        $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "EmailAltRecipient" -Value $Config.Settings.General.EmailAltRecipient
+        $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "AlwaysAlt" -Value $Config.Settings.General.AlwaysAlt
         $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "EmailSender" -Value $Config.Settings.General.EmailSender
         $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "HNPattern" -Value $Config.Settings.General.HNPattern
         $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "Exclusions" -Value $Config.Settings.Exclusions.Exclude
@@ -758,21 +753,31 @@ $HtmlReport += '<tr><td colspan='+$Columns+'><center><font color=darkcyan><stron
 $HtmlReport += '</table></div></body></html>'
 
 #--[ Only keep the last 10 of the log files ]-- 
-If (!(Test-Path -PathType container ($SourcePath+"\Reports"))){
-      New-Item -ItemType Directory -Path ($PSScriptRoot+"\Reports") -Force
+Try{
+    If (!(Test-Path -PathType container ($SourcePath+"\Reports"))){
+          New-Item -ItemType Directory -Path ($PSScriptRoot+"\Reports") -Force
+    }
+    Get-ChildItem -Path ($SourcePath+"\Reports") | Where-Object {(-not $_.PsIsContainer) -and ($_.Name -like "*html*")} | Sort-Object -Descending -Property LastTimeWrite | Select-Object -Skip 10 | Remove-Item | Out-Null
+    $DateTime = Get-Date -Format MM-dd-yyyy_hh.mm.ss 
+    $Report = ($SourcePath+"\Reports\UPS-Status_"+$DateTime+".html")
+    StatusMsg $Report "Yellow" $ExtOption
+    Add-Content -Path $Report -Value $HtmlReport#>
+}Catch{
+    StatusMsg "Folder access issue.  Logfile cannot be saved." "Red" $ExtOption
+    $HtmlReport += "NOTE:  There is an issue with folder access.  Log file has NOT been saved."
 }
-Get-ChildItem -Path ($SourcePath+"\Reports") | Where-Object {(-not $_.PsIsContainer) -and ($_.Name -like "*html*")} | Sort-Object -Descending -Property LastTimeWrite | Select-Object -Skip 10 | Remove-Item | Out-Null
-$DateTime = Get-Date -Format MM-dd-yyyy_hh.mm.ss 
-$Report = ($SourcePath+"\Reports\UPS-Status_"+$DateTime+".html")
-Add-Content -Path $Report -Value $HtmlReport#>
 
 #--[ Set the alternate email recipient if running out of an IDE console for testing ]-- 
-If ($Env:Username.SubString(0,1) -eq "a"){       #--[ Filter out admin accounts ]--
-    $ThisUser = ($Env:Username.SubString(1))+"@"+$Env:USERDNSDOMAIN 
-    $ExtOption | Add-Member -MemberType NoteProperty -Name "EmailAltRecipient" -Value $ThisUser -force
+If ($Null -ne $ExtOption.EmailAltRecipient){
+    #--[ Use the setting from XML ]--
 }Else{
-    $ThisUser = $Env:USERNAME+"@"+$Env:USERDNSDOMAIN 
-    $ExtOption | Add-Member -MemberType NoteProperty -Name "EmailAltRecipient" -Value $ThisUser -force
+    If ($Env:Username.SubString(0,1) -eq "a"){       #--[ Filter out admin accounts ]--
+        $ThisUser = ($Env:Username.SubString(1))+"@"+$Env:USERDNSDOMAIN 
+        $ExtOption | Add-Member -MemberType NoteProperty -Name "EmailAltRecipient" -Value $ThisUser -force
+    }Else{
+        $ThisUser = $Env:USERNAME+"@"+$Env:USERDNSDOMAIN 
+        $ExtOption | Add-Member -MemberType NoteProperty -Name "EmailAltRecipient" -Value $ThisUser -force
+    }
 }
 
 SendEmail $HtmlReport $ExtOption 
@@ -793,9 +798,11 @@ If ($ExtOption.ConsoleState){Write-host "`n--- Completed ---" -foregroundcolor r
         <IPListFile>IP-List.txt</IPListFile>
         <SmtpServer>mail.company.org</SmtpServer>
         <EmailRecipient>it@company.org</EmailRecipient>
+        <EmailAltRecipient></EmailAltRecipient>  <!-- If blank the user ID running the script is used -->
         <EmailSender>ups@company.org</EmailSender>
    		<HNPattern>UPS</HNPattern>
    		<DayOfWeek>Sunday</DayOfWeek>
+        <AlwaysAlt>True</AlwaysAlt>  <!-- When set to TRUE the alt email recipient gets an email at every run -->
     </General>
     <Exclusions>
 		<Exclude>10.10.10.21,10.10.120.22,10.10.12.23</Exclude>
