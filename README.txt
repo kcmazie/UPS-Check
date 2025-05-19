@@ -27,20 +27,20 @@ Pulls status from a list of APC UPS devices and emails an HTML Report.
                    :   not limited to the following:
                    : 
     Last Update by : Kenneth C. Mazie                                           
-   Version History : v1.0 - 08-16-22 - Original 
-    Change History : v2.0 - 09-00-22 - Numerous operational & bug fixes prior to v3.
-                   : v3.1 - 09-15-22 - Cleaned up final version for posting.
-                   : v4.0 - 04-12-23 - Too many changes to list
-                   : v4.1 - 07-03-23 - Added age and LDOS dates. 
-                   : v5.0 - 01-17-24 - Fixed DNS lookup.  Fixed last test result.  Fixed color coding of hostname for
-                   :                   numerous events.  Added hostname cell comments to describe color coding.
-                   : v6.0 - 02-12-24 - Retooled Html email report.  Added self test failed counts.  Added saved reports.
-                   : v6.1 - 02-13-24 - Added missing external config entries.
-                   : v7.0 - 02-16-24 - Fixed major bugs after moving config to external XML.
-                   : v7.1 - 02-27-24 - Added exclusion list
-                   : v7.2 - 03-05-24 - Fixed bugs found after PC crash.  Altered email sending options.
-                   : v7.3 - 03-25-24 - Removed unknown status for everything that doesnt return that status from SNMP
-                   : v7.4 - 12-24-24 - Fixed a number of typos.  Fixed detection of excluded IP addresses.
-                   :                   
+   Version History : v1.00 - 08-16-22 - Original 
+    Change History : v2.00 - 09-00-22 - Numerous operational & bug fixes prior to v3.
+                   : v3.10 - 09-15-22 - Cleaned up final version for posting.
+                   : v4.00 - 04-12-23 - Too many changes to list
+                   : v4.10 - 07-03-23 - Added age and LDOS dates. 
+                   : v5.00 - 01-17-24 - Fixed DNS lookup.  Fixed last test result.  Fixed color coding of hostname for
+                   :                    numerous events.  Added hostname cell comments to describe color coding.
+                   : v6.00 - 02-12-24 - Retooled Html email report.  Added self test failed counts.  Added saved reports.
+                   : v6.10 - 02-13-24 - Added missing external config entries.
+                   : v7.00 - 02-16-24 - Fixed major bugs after moving config to external XML.
+                   : v7.10 - 02-27-24 - Added exclusion list
+                   : v7.20 - 03-05-24 - Fixed bugs found after PC crash.  Altered email sending options.
+                   : v7.30 - 03-25-24 - Removed unknown status for everything that doesnt return that status from SNMP
+                   : v7.40 - 12-24-24 - Fixed a number of typos.  Fixed detection of excluded IP addresses.
+                   : v7.50 - 05-19-25 - Adjusted the way email sends.  Added try-catch for email and log file.                  
                    :                   
 ==============================================================================#>
