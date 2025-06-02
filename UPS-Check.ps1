@@ -372,7 +372,7 @@ If (Test-Path -Path ($SourcePath+"\"+$ExtOption.IPListFile) -PathType Leaf){
     }
     $WorkSheet = $Workbook.WorkSheets.Item("UPS")
     $WorkSheet.activate()    
-    $Row = 4   
+    $Row = 2   
     $IPList = @() 
     Do {
         $IPList += ,@($Row,$WorkSheet.Cells.Item($row,1).Text)
@@ -397,7 +397,7 @@ ForEach ($Target in $IPList){  #--[ Are we pulling from Excel or a text file?  J
 }
 
 #==[ Process items collected in $IPList, from spreadsheet, or text file as appropriate ]===============================
-$Row = 4   
+$Row = 2  
 $TestPass = 0
 $TestFail = 0
 $TestUnknown = 0
