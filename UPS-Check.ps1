@@ -43,8 +43,14 @@ Param(
                    : v7.30 - 03-25-24 - Removed unknown status for everything that doesnt return that status from SNMP
                    : v7.40 - 12-24-24 - Fixed a number of typos.  Fixed detection of excluded IP addresses.
                    : v7.50 - 05-19-25 - Adjusted the way email sends.  Added try-catch for email and log file.
+                   : v7.51 - 05-29-25 - Added title color change if any anomaly is detected.
+                   : v8.00 - 06-12-25 - Shuffled Excel sections and added error checks in the event Excel automation
+                   :                    fails due to PC restrictions when run as a scheduled task.  If Excel fails 
+                   :                    the script will abort and produce an error log in the script folder.
                    :                   
 ==============================================================================#>
+#$ErrorActionPreference = "stop"
+#try{
 #Requires -version 5
 Clear-Host 
 
@@ -192,7 +198,12 @@ Function SNMPv3Walk ($Obj,$ExtOption,$OID){
         PrivSecret = $ExtOption.SNMPv3Secret
         #Context    = ''
     }
-    $Result = Invoke-SNMPv3Walk @WalkRequest | Format-Table -AutoSize
+ $erroractionpreference = "stop"
+    try{
+        $Result = Invoke-SNMPv3Walk @WalkRequest | Format-Table -AutoSize
+    }Catch{
+        add-content -Path $PSScriptRoot\new-error.log -Value $_.Exception.Message
+    }
     If ($ExtOption.Debug){write-host "SNMpv3 Debug :" $Result }
     Return $Result
 }
@@ -276,6 +287,7 @@ $OIDArray += ,@('UPSSerial','.1.3.6.1.4.1.318.1.1.1.1.2.3.0')
 #$OIDArray += ,@('UPSModelName','.1.3.6.1.4.1.318.1.1.1.1.1.1.0')
 $OIDArray += ,@('UPSModelName','.1.3.6.1.4.1.318.1.4.2.2.1.5.1')
 $OIDArray += ,@('UPSModelNum','.1.3.6.1.4.1.318.1.1.1.1.2.5.0')
+#$OIDArray += ,@('UPSModelNum2','1.3.6.1.4.1.318.1.1.1.1.1.1')
 $OIDArray += ,@('UPSMfgDate','.1.3.6.1.4.1.318.1.1.1.1.2.2.0')
 #--[ MfgDate from SN:  xx1915xxxxxx means mfg in 2019, 15th week.  ]--
 #$OIDArray += ,@('UPSIDName','.1.3.6.1.2.1.33.1.1.5.0')
@@ -309,8 +321,6 @@ $OIDArray += ,@('BattRunTime','.1.3.6.1.4.1.318.1.1.1.2.2.3.0')
 #$OIDArray += ,@('UPSOutLoad','.1.3.6.1.4.1.318.1.1.1.4.2.3.0')
 #$OIDArray += ,@('UPSOutAmps','.1.3.6.1.4.1.318.1.1.1.4.2.4.0')    
 
-
-
 #==[ Begin ]==============================================================
 
 #--[ Load external XML options file ]--
@@ -330,46 +340,50 @@ If ($Debug){
 StatusMsg "Processing UPS Devices" "Yellow" $ExtOption
 $erroractionpreference = "stop"
 
-#--[ Close copies of Excel that PowerShell has open ]--
-If ($CloseAnyOpenXL){
-    $ProcID = Get-CimInstance Win32_Process | Where-Object {$_.name -like "*excel*"}
-    ForEach ($ID in $ProcID){  #--[ Kill any open instances to avoid issues ]--
-        Foreach ($Proc in (get-process -id $id.ProcessId)){
-            if (($ID.CommandLine -like "*/automation -Embedding") -Or ($proc.MainWindowTitle -like "$ExcelWorkingCopy*")){
-                Stop-Process -ID $ID.ProcessId -Force
-                StatusMsg "Killing any existing open PowerShell instance of Excel..." "Red" $ExtOption
-                Start-Sleep -Milliseconds 100
-            }
-        }
-    }
-}
-
-
-#--[ Create new Excel COM object ]--
-$Excel = New-Object -ComObject Excel.Application -ErrorAction Stop
-StatusMsg "Creating new Excel COM object..." "Magenta" $ExtOption
-
 If (Test-Path -Path $ExtOption.SourcePath -PathType leaf){
     $SourcePath = $ExtOption.SourcePath
 }Else{
     $SourcePath = $PSScriptRoot
 }
 
-#--[ If this file exists the IP list will be pulled from it ]--
+#--[ Locate and load data from source file ]--
+#--[ If the text file exists the IP list will be pulled from it ]--
 If (Test-Path -Path ($SourcePath+"\"+$ExtOption.IPListFile) -PathType Leaf){   
     $IPList = Get-Content ($SourcePath+"\"+$ExtOption.IPListFile)         
     StatusMsg "IP text list was found, loading IP list from it... " "green"  $ExtOption
-}else{ 
+}ElseIf (Test-Path -Path ($SourcePath+"\"+$ExtOption.ExcelSourceFile) -PathType Leaf){
     StatusMsg "IP text list not found, Attempting to process spreadsheet... " "cyan" $ExtOption
-    If (Test-Path -Path ($SourcePath+"\"+$ExtOption.ExcelSourceFile) -PathType Leaf){
-        $Excel.Visible = $false
-        $WorkBook = $Excel.Workbooks.Open(($SourcePath+"\"+$ExtOption.ExcelSourceFile))
-        $WorkSheet = $Workbook.WorkSheets.Item("UPS")
-        $WorkSheet.activate()       
-    }Else{
-        StatusMsg "Existing spreadsheet not found, Source copy failed, Nothing to process.  Exiting... " "red" $ExtOption
-        Break;break
+    #--[ Close copies of Excel that PowerShell has open ]--
+    If ($CloseAnyOpenXL){
+        $ProcID = Get-CimInstance Win32_Process | Where-Object {$_.name -like "*excel*"}
+        ForEach ($ID in $ProcID){  #--[ Kill any open instances to avoid issues ]--
+            Foreach ($Proc in (get-process -id $id.ProcessId)){
+                if (($ID.CommandLine -like "*/automation -Embedding") -Or ($proc.MainWindowTitle -like "$ExcelWorkingCopy*")){
+                    Stop-Process -ID $ID.ProcessId -Force
+                    StatusMsg "Killing any existing open PowerShell instance of Excel..." "Red" $ExtOption
+                    Start-Sleep -Milliseconds 100
+                }
+            }
+        }
     }
+    #--[ Create new Excel COM object ]--
+    Try{
+        $Excel = New-Object -ComObject Excel.Application -ErrorAction Stop
+        StatusMsg "Creating new Excel COM object..." "Magenta" $ExtOption
+    }Catch{
+        Add-Content -Path "$PSScriptRoot\--UPSCheck_FAILURE--.log" -Value "`r`n============================"
+        Add-Content -Path "$PSScriptRoot\--UPSCheck_FAILURE--.log" -Value "Excel automation has failed @ $DateTime "
+        Add-Content -Path "$PSScriptRoot\--UPSCheck_FAILURE--.log" -Value "Please save spreadsheet column A as a text file to process it."
+        Add-Content -Path "$PSScriptRoot\--UPSCheck_FAILURE--.log" -Value "--[ Exception Msg ]---------"
+        Add-Content -Path "$PSScriptRoot\--UPSCheck_FAILURE--.log" -Value $_.Exception.Message
+        Add-Content -Path "$PSScriptRoot\--UPSCheck_FAILURE--.log" -Value "--[ Error Msg ]-------------"
+        Add-Content -Path "$PSScriptRoot\--UPSCheck_FAILURE--.log" -Value $_.Error.Message
+         break
+    }
+    $Excel.Visible = $false
+    $WorkBook = $Excel.Workbooks.Open(($SourcePath+"\"+$ExtOption.ExcelSourceFile))
+    $WorkSheet = $Workbook.WorkSheets.Item("UPS")
+    $WorkSheet.activate()   
     $WorkSheet = $Workbook.WorkSheets.Item("UPS")
     $WorkSheet.activate()    
     $Row = 2   
@@ -379,14 +393,16 @@ If (Test-Path -Path ($SourcePath+"\"+$ExtOption.IPListFile) -PathType Leaf){
         $Row++
     } Until (
         $WorkSheet.Cells.Item($row,1).Text -eq ""   #--[ Condition that stops the loop if it returns true ]--
-    )
+    )  
+    $Excel.DisplayAlerts = $false
+    $WorkBook.Close($true)
+    $Excel.Quit()
+    $Excel.Quit()
+    $Excel.Quit()  
+}Else{
+    StatusMsg "Existing spreadsheet not found, Source copy failed, Nothing to process.  Exiting... " "red" $ExtOption
+    Break;break
 }
-
-$Excel.DisplayAlerts = $false
-$WorkBook.Close($true)
-$Excel.Quit()
-$Excel.Quit()
-$Excel.Quit()
 
 ForEach ($Target in $IPList){  #--[ Are we pulling from Excel or a text file?  Jagged has row numbers from Excel ]--
     if ($Target.length -eq 2){
@@ -397,7 +413,7 @@ ForEach ($Target in $IPList){  #--[ Are we pulling from Excel or a text file?  J
 }
 
 #==[ Process items collected in $IPList, from spreadsheet, or text file as appropriate ]===============================
-$Row = 2  
+$Row = 2   
 $TestPass = 0
 $TestFail = 0
 $TestUnknown = 0
@@ -689,6 +705,15 @@ ForEach ($Target in $IPList){
 }
 
 #--[ HTML Email Report ]--
+
+If ($TestFail -gt 0){
+    $Title = 'darkred><strong>!! Battery Backup Status Report !!'
+}ElseIf (($Offline -gt 0) -or ($TestUnknown -gt 0)){
+    $Title = 'orange><strong>!! Battery Backup Status Report !!'
+}Else{
+    $Title = 'darkcyan><strong>Battery Backup Status Report'
+}
+
 $Columns = 12  #--[ Total columns in report ]--
 $HtmlHeader += '
 <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
@@ -702,7 +727,7 @@ $HtmlBody +='
     <div class="content">
     <table border-collapse="collapse" border="3" cellspacing="0" cellpadding="5" width="100%" bgcolor="#E6E6E6" bordercolor="black">
         <tr>
-            <td colspan='+$Columns+'><center><H2><font color=darkcyan><strong>Battery Backup Status Report</strong></H2></center></td>
+            <td colspan='+$Columns+'><center><H2><font color='+$Title+'</strong></H2></center></td>
         </tr>
         <tr>
             <td colspan='+$Columns+'>
@@ -787,7 +812,9 @@ SendEmail $HtmlReport $ExtOption
 
 If ($ExtOption.ConsoleState){Write-host "`n--- Completed ---" -foregroundcolor red}
 
-
+#}catch{
+ #   add-content -Path $PSScriptRoot\new-error.log -Value $_.Exception.Message
+#}
 <#--[ XML File Example -- File should be named same as the script ]--
 <!-- Settings & configuration file -->
 <Settings>
