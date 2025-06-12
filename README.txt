@@ -41,6 +41,9 @@ Pulls status from a list of APC UPS devices and emails an HTML Report.
                    : v7.20 - 03-05-24 - Fixed bugs found after PC crash.  Altered email sending options.
                    : v7.30 - 03-25-24 - Removed unknown status for everything that doesnt return that status from SNMP
                    : v7.40 - 12-24-24 - Fixed a number of typos.  Fixed detection of excluded IP addresses.
-                   : v7.50 - 05-19-25 - Adjusted the way email sends.  Added try-catch for email and log file.                  
+                   : v7.50 - 05-19-25 - Adjusted the way email sends.  Added try-catch for email and log file.     
+                   : v8.00 - 06-12-25 - Shuffled Excel sections and added error checks in the event Excel automation
+                   :                    fails due to PC restrictions when run as a scheduled task.  If Excel fails 
+                   :                    the script will abort and produce an error log in the script folder.
                    :                   
 ==============================================================================#>
