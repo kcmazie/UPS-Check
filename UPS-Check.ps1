@@ -1,14 +1,14 @@
-Param(
-    [switch]$Console = $false,                                                  #--[ Set to true to enable local console result display. Defaults to false ]--
-    [switch]$Debug = $False                                                     #--[ Generates extra console output for debugging.  Defaults to false ]--
-)
+
 <#==============================================================================
          File Name : UPS-Check.ps1
    Original Author : Kenneth C. Mazie (kcmjr AT kcmjr.com)
                    : 
        Description : Uses SNMP to poll and track APC UPS devices using MS Excel.
                    : 
-             Notes : Normal operation is with no command line options.  Commandline options noted below.
+             Notes : This script is INTENDED to use an Excel back-end to track UPS inventory.  Because 
+                   : incidents arrise where Excel may not be available or function autonomously options 
+                   : have been added to pull datas from both a flat text file as a CSV text file.
+                   : Normal operation is with no command line options.  Commandline options noted below.
                    :
       Requirements : Requires the PowerShell SNMP library from https://www.powershellgallery.com/packages/SNMPv3
                    : Currently designed to poll APC UPS devices and emails a report.  UPS NMC must have SNMP v3 active.
@@ -47,10 +47,13 @@ Param(
                    : v8.00 - 06-12-25 - Shuffled Excel sections and added error checks in the event Excel automation
                    :                    fails due to PC restrictions when run as a scheduled task.  If Excel fails 
                    :                    the script will abort and produce an error log in the script folder.
+                   : v8.10 - 08-01-25 - Fixed minor typos.  Updated module load routine.
+                   : v8.20 - 09-03-25 - Edited SMNP import function.  Minor report text color adjustments.
+                   : v8.30 - 09-05-25 - Rearranged columns in report for clarity.
+                   : v8.40 - 02-06-26 - Added name of system running the script to the email report.  Adjusted when the report
+                   :                    header changes denoting failures and unknown status.
                    :                   
 ==============================================================================#>
-#$ErrorActionPreference = "stop"
-#try{
 #Requires -version 5
 Clear-Host 
 
@@ -60,21 +63,32 @@ $Today = Get-Date -Format MM-dd-yyyy
 $CloseAnyOpenXL = $false
 
 #--[ Runtime tweaks for testing ]--
-$Console = $False
-$Debug = $False
+$Console = $False   #--[ Set to true to enable local console result display. Defaults to false ]--
+$Debug = $False     #--[ Generates extra console output for debugging.  Defaults to false ]--
 #------------------------------------------------------------
 
-$ErrorActionPreference = "stop"
-try{
-    if (!(Get-Module -Name SNMPv3)) {
-        Get-Module -ListAvailable SNMPv3 | Import-Module | Out-Null
+#==[ Functions ]===============================================================
+Function LoadModules{
+    $ErrorActionPreference = "stop"
+    Try{
+        If (!(Get-Module -Name 'SNMPv3')) {
+            If (Get-Module -ListAvailable | Where-Object {$_.Name -eq "SNMPv3"}){ 
+                Import-Module "SNMPv3" | Out-Null 
+            }
+        }Else{
+            If (Find-Module -Name "SNMPv3" | Where-Object {$_.Name -eq "SNMPv3"}) {
+                Write-host "Installing SNMPv3 module from repository..." -ForegroundColor Cyan
+                Install-Module -Name "SNMPv3" -Force -Scope CurrentUser #-Verbose
+                Import-Module "SNMPv3" #-Verbose
+            }
+        }
+    }Catch{
+        Write-host "Error installing SNMPv3 module" -ForegroundColor red
+        Write-host $_.Error.Message
+        Write-host $_.Exception.Message
     }
-    Install-Module -Name SNMPv3
-}Catch{
-    Write-host "Error installing SNMP module" -ForegroundColor red
 }
 
-#==[ Functions ]===============================================================
 Function SendEmail ($MessageBody,$ExtOption) { 
     $Smtp = New-Object Net.Mail.SmtpClient($ExtOption.SmtpServer,$ExtOption.SmtpPort) 
     $Email = New-Object System.Net.Mail.MailMessage  
@@ -322,6 +336,7 @@ $OIDArray += ,@('BattRunTime','.1.3.6.1.4.1.318.1.1.1.2.2.3.0')
 #$OIDArray += ,@('UPSOutAmps','.1.3.6.1.4.1.318.1.1.1.4.2.4.0')    
 
 #==[ Begin ]==============================================================
+LoadModules
 
 #--[ Load external XML options file ]--
 $ConfigFile = $PSScriptRoot+"\"+($MyInvocation.MyCommand.Name.Split("_")[0]).Split(".")[0]+".xml"
@@ -335,6 +350,9 @@ If ($ExtOption.ConsoleState){
 }
 If ($Debug){
     $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "Debug" -Value $True
+}
+If ($Console){
+    $ExtOption | Add-Member -Force -MemberType NoteProperty -Name "ConsoleState" -Value $True
 }
 
 StatusMsg "Processing UPS Devices" "Yellow" $ExtOption
@@ -384,8 +402,6 @@ If (Test-Path -Path ($SourcePath+"\"+$ExtOption.IPListFile) -PathType Leaf){
     $WorkBook = $Excel.Workbooks.Open(($SourcePath+"\"+$ExtOption.ExcelSourceFile))
     $WorkSheet = $Workbook.WorkSheets.Item("UPS")
     $WorkSheet.activate()   
-    $WorkSheet = $Workbook.WorkSheets.Item("UPS")
-    $WorkSheet.activate()    
     $Row = 2   
     $IPList = @() 
     Do {
@@ -423,6 +439,7 @@ $HtmlHeader = @()
 $HtmlReport = @() 
 $HtmlBody = @()
 $Count = $IPList.Count
+$Current = 1
 
 ForEach ($Target in $IPList){
     $Obj = New-Object -TypeName psobject   #--[ Individual Target Device Result Collection ]--
@@ -431,12 +448,11 @@ ForEach ($Target in $IPList){
         $Row = $Target[0]
         $Target = $Target[1]
     }
-    $Current = $Row-3
 
     $Obj | Add-Member -MemberType NoteProperty -Name "IPAddress" -Value $Target -force
     
     If ($ExtOption.ConsoleState){
-        Write-Host "`nCurrent Target  :"$Target"  ("$Current" of "$Count")" -ForegroundColor Yellow 
+        Write-Host "`nCurrent Target :"$Target"  ("($Current++)"of"$Count" )" -ForegroundColor Yellow 
     }
    
     Try{
@@ -668,9 +684,21 @@ ForEach ($Target in $IPList){
 
     #--[ Add data line to HTML report ]--
     $HtmlData = '<tr>'
-    $HtmlData += '<td>'+$Obj.HostName+'</td>'
+    Switch ($Obj.LastTestResult){ 
+        "Failed"{
+            $HtmlData += '<td><strong><font color=Red>'+$Obj.HostName+'</font></td>'
+        }
+        "Unknown"{
+            $HtmlData += '<td><strong><font color=Orange>'+$Obj.HostName+'</font></td>'
+        }
+        Default{
+            $HtmlData += '<td>'+$Obj.HostName+'</td>'
+        }
+    }
     $HtmlData += '<td>'+$Obj.IPAddress+'</td>'
-    $HtmlData += '<td>'+$Obj.Facility+'</td>'  
+
+
+
 
     Switch ($obj.Connection){
         "OffLine"{
@@ -683,13 +711,7 @@ ForEach ($Target in $IPList){
             $HtmlData +=  '<td><strong><font color=Green>'+$Obj.Connection+'</strong></font></td>'
         }
     }  
-    
-    $HtmlData += '<td>'+$Obj.MFG+'</td>'
-    $HtmlData += '<td>'+$Obj.UPSModelNum+'</td>'
-    $HtmlData += '<td>'+$Obj.UPSModelName+'</td>'
-    $HtmlData += '<td>'+$Obj.UPSSerial+'</td>'
-    $HtmlData += '<td>'+$Obj.UPSAge+'</td>'
-    $HtmlData += '<td>'+$Obj.LastTestDate+'</td>'
+        $HtmlData += '<td>'+$Obj.LastTestDate+'</td>'
     If ($Obj.LastTestResult -eq "Passed"){
         $HtmlData += '<td><strong><font color=Green>' 
     }ElseIf ($Obj.LastTestResult -eq "Failed"){
@@ -699,17 +721,22 @@ ForEach ($Target in $IPList){
     }
     $HtmlData += $Obj.LastTestResult+'</strong></font></td>'
     $HtmlData += '<td>'+$Obj.BattRunTime+'</td>'
+    $HtmlData += '<td>'+$Obj.Facility+'</td>'  
+    $HtmlData += '<td>'+$Obj.MFG+'</td>'
+    $HtmlData += '<td>'+$Obj.UPSModelNum+'</td>'
+    $HtmlData += '<td>'+$Obj.UPSModelName+'</td>'
+    $HtmlData += '<td>'+$Obj.UPSSerial+'</td>'
+    $HtmlData += '<td>'+$Obj.UPSAge+'</td>'
     $HtmlData += '</tr>'
     $HtmlReport += $HtmlData   
     $Obj = ""   
 }
 
 #--[ HTML Email Report ]--
-
-If ($TestFail -gt 0){
-    $Title = 'darkred><strong>!! Battery Backup Status Report !!'
-}ElseIf (($Offline -gt 0) -or ($TestUnknown -gt 0)){
+If (($Offline -gt 0) -or ($TestUnknown -gt 0)){
     $Title = 'orange><strong>!! Battery Backup Status Report !!'
+}ElseIf ($TestFail -gt 0){
+    $Title = 'darkred><strong>!! Battery Backup Status Report !!'
 }Else{
     $Title = 'darkcyan><strong>Battery Backup Status Report'
 }
@@ -739,12 +766,12 @@ $HtmlBody +='
                         }Else{
                             $HtmlBody +='<td><font color="green"><strong><center>Offline = '+$Offline+'</center></td>'
                         }
-                        $HtmlBody +='<td><font color="green"><strong><center>Self-Test Passes = '+$TestPass+'</center></td>'
+                        $HtmlBody +='<td><font color="green"><strong><center>Self-Test Passes = '+$TestPass+'</center></td>'                        
                         If ($TestFail -gt 0){
                             $HtmlBody +='<td><font color="red"><strong><center>Self-Test Failures = '+$TestFail+'</center></td>'
                         }Else{
                             $HtmlBody +='<td><font color="green"><strong><center>Self-Test Failures = '+$TestFail+'</center></td>'
-                        }
+                        }                        
                         If ($TestUnknown -gt 0){                     
                             $HtmlBody +='<td><font color="orange"><strong><center>Unknown Status = '+$TestUnknown+'</center></td>'
                         }Else{
@@ -758,23 +785,23 @@ $HtmlBody +='
         <tr>
             <td><strong><center>Host Name</center></td>
             <td><strong><center>IP Address</center></td>
-            <td><strong><center>Location</center></td>
             <td><strong><center>Status</center></td>
+            <td><strong><center>Last Test</center></td>
+            <td><strong><center>Result</center></td>
+            <td><strong><center>Runtime</center></td>
+            <td><strong><center>Location</center></td>
             <td><strong><center>Mfg</center></td>
             <td><strong><center>Model #</center></td>
             <td><strong><center>Model Name</center></td>
             <td><strong><center>Serial</center></td>
-            <td><strong><center>Age (Years)</center></td>
-            <td><strong><center>Last Test</center></td>
-            <td><strong><center>Result</center></td>
-            <td><strong><center>Runtime</center></td>
+            <td><strong><center>Age (Years)</center></td>                        
         </tr>
 '
 
 #--[ Construct final full report ]--
 $DateTime = Get-Date -Format MM-dd-yyyy_hh:mm:ss 
 $HtmlReport = $HtmlHeader+$HtmlBody+$HtmlReport
-$HtmlReport += '<tr><td colspan='+$Columns+'><center><font color=darkcyan><strong>Audit completed at: '+$DateTime+'</strong></center></td></tr>'   
+$HtmlReport += '<tr><td colspan='+$Columns+'><center><font color=darkcyan><strong>Audit completed at: '+$DateTime+' from '+$Env:COMPUTERNAME+'</strong></center></td></tr>'   
 $HtmlReport += '</table></div></body></html>'
 
 #--[ Only keep the last 10 of the log files ]-- 
@@ -808,7 +835,9 @@ If ($Null -ne $ExtOption.EmailAltRecipient){
 SendEmail $HtmlReport $ExtOption 
 
 #--[ Use this to load the report in the default browser ]--
-# iex $Report
+If ($BrowserLoad){
+    Invoke-Expression $Report
+}
 
 If ($ExtOption.ConsoleState){Write-host "`n--- Completed ---" -foregroundcolor red}
 
