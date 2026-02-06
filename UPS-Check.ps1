@@ -52,6 +52,7 @@
                    : v8.30 - 09-05-25 - Rearranged columns in report for clarity.
                    : v8.40 - 02-06-26 - Added name of system running the script to the email report.  Adjusted when the report
                    :                    header changes denoting failures and unknown status.
+                   : v8.41 - 02-06-26 - Adjusted error in the way email send logic was formatted.
                    :                   
 ==============================================================================#>
 #Requires -version 5
@@ -97,18 +98,17 @@ Function SendEmail ($MessageBody,$ExtOption) {
     $Email.Subject = "UPS Status Report"
     $Email.Body = $MessageBody
     $ErrorActionPreference = "stop"
-    Try {  #--[ If running out of an IDE console, in debug, or alwaysalt modes, send only to the alt user for testing ]-- 
+    Try {  
         If (($ExtOption.ConsoleState -or $ExtOption.Debug) -or ($ExtOption.AlwaysAlt -like "*True*")){
+            #--[ If running out of an IDE console, in debug, or AlwaysAlt modes, send to the alt user for testing ]-- 
             $Email.To.Add($ExtOption.EmailAltRecipient)  
-            $Smtp.Send($Email)
-            If ($ExtOption.ConsoleState){Write-Host `n"--- Email Sent ---" -ForegroundColor red }
-        }Else{
-            If ($ExtOption.Alert){  #--[ If a device failed self-test or trigger day is matched send to main recipient ]--     
-                $Email.To.Add($ExtOption.EmailRecipient)          
-                $Smtp.Send($Email)
-                If ($ExtOption.ConsoleState){Write-Host `n"--- Email Sent ---" -ForegroundColor red }     
-            }
         }
+        If (($ExtOption.Alert) -and (!($ExtOption.Debug))){  
+            #--[ If a device failed self-test or trigger day is matched send to main recipient unless debug mode is enabled ]--     
+            $Email.To.Add($ExtOption.EmailRecipient)          
+        }
+        $Smtp.Send($Email)
+        If ($ExtOption.ConsoleState){Write-Host `n"--- Email Sent ---" -ForegroundColor red }                 
     }Catch{
         $ErrorMessage = $_.Error.Message
         $ExceptionMsg = $_.Exception.Message
