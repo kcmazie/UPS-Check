@@ -53,6 +53,9 @@ Pulls status from a list of APC UPS devices and emails an HTML Report.
                    : v8.30 - 09-05-25 - Rearranged columns in report for clarity.
                    : v8.40 - 02-06-26 - Added name of system running the script to the email report.  Adjusted when the 
                    :                    report header changes denoting failures and unknown status.
-                   : v8.41 - 02-06-26 - Adjusted error in the way email send logic was formatted.
-                   :                   
+                   : v8.41 - 02-06-26 - Adjusted error in the way email send logic was formatted.  Also adjusted coloring
+                   :                    of the email report data to more accurately reflect the status of the devices.  Added
+                   :                    script version to report footer.
+                   : #>
+                   $ScriptVer = "8.41"    <#--[ Current version # used in script ]--
 ==============================================================================#>
