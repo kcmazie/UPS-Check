@@ -45,5 +45,10 @@ Pulls status from a list of APC UPS devices and emails an HTML Report.
                    : v8.00 - 06-12-25 - Shuffled Excel sections and added error checks in the event Excel automation
                    :                    fails due to PC restrictions when run as a scheduled task.  If Excel fails 
                    :                    the script will abort and produce an error log in the script folder.
+                   : v8.10 - 08-01-25 - Fixed minor typos.  Updated module load routine.
+                   : v8.20 - 09-03-25 - Edited SMNP import function.  Minor report text color adjustments.
+                   : v8.30 - 09-05-25 - Rearranged columns in report for clarity.
+                   : v8.40 - 02-06-26 - Added name of system running the script to the email report.  Adjusted when the report
+                   :                    header changes denoting failures and unknown status.
                    :                   
 ==============================================================================#>
