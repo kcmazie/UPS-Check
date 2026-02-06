@@ -52,8 +52,11 @@
                    : v8.30 - 09-05-25 - Rearranged columns in report for clarity.
                    : v8.40 - 02-06-26 - Added name of system running the script to the email report.  Adjusted when the report
                    :                    header changes denoting failures and unknown status.
-                   : v8.41 - 02-06-26 - Adjusted error in the way email send logic was formatted.
-                   :                   
+                   : v8.41 - 02-06-26 - Adjusted error in the way email send logic was formatted.  Also adjusted coloring
+                   :                    of the email report data to more accurately reflect the status of the devices.  Added
+                   :                    script version to report footer.
+                   : #>
+                   $ScriptVer = "8.41"    <#--[ Current version # used in script ]--
 ==============================================================================#>
 #Requires -version 5
 Clear-Host 
@@ -697,28 +700,33 @@ ForEach ($Target in $IPList){
     }
     $HtmlData += '<td>'+$Obj.IPAddress+'</td>'
 
-
-
-
     Switch ($obj.Connection){
         "OffLine"{
             $HtmlData += '<td><strong><font color=red>Offline</strong></font></td>'
         }
         "Excluded"{
-            $HtmlData += '<td><strong><font color=orange>Excluded</strong></font></td>'
+            $HtmlData += '<td><font color=black>Excluded</font></td>'
         }
         Default {
             $HtmlData +=  '<td><strong><font color=Green>'+$Obj.Connection+'</strong></font></td>'
         }
     }  
-        $HtmlData += '<td>'+$Obj.LastTestDate+'</td>'
-    If ($Obj.LastTestResult -eq "Passed"){
-        $HtmlData += '<td><strong><font color=Green>' 
-    }ElseIf ($Obj.LastTestResult -eq "Failed"){
-        $HtmlData += '<td><strong><font color=Red>'
-    }Else{
-        $HtmlData += '<td><strong><font color=Orange>'
-    }
+    $HtmlData += '<td>'+$Obj.LastTestDate+'</td>'
+        
+    Switch ($Obj.LastTestResult){
+        "Passed"{
+            $HtmlData += '<td><strong><font color=Green>'+$Obj.LastTestResult+'</strong></font></td>'
+        }
+        "Failed"{
+            $HtmlData += '<td><strong><font color=Red>'+$Obj.LastTestResult+'</strong></font></td>'
+        }
+        "Unknown"{
+            $HtmlData += '<td><strong><font color=Orange>'+$Obj.LastTestResult+'</strong></font></td>'
+        }
+        Default{
+            $HtmlData += '<td><font color=Black>'+$Obj.LastTestResult+'</font></td>'
+        }
+    }   
     $HtmlData += $Obj.LastTestResult+'</strong></font></td>'
     $HtmlData += '<td>'+$Obj.BattRunTime+'</td>'
     $HtmlData += '<td>'+$Obj.Facility+'</td>'  
@@ -801,7 +809,7 @@ $HtmlBody +='
 #--[ Construct final full report ]--
 $DateTime = Get-Date -Format MM-dd-yyyy_hh:mm:ss 
 $HtmlReport = $HtmlHeader+$HtmlBody+$HtmlReport
-$HtmlReport += '<tr><td colspan='+$Columns+'><center><font color=darkcyan><strong>Audit completed at: '+$DateTime+' from '+$Env:COMPUTERNAME+'</strong></center></td></tr>'   
+$HtmlReport += '<tr><td colspan='+$Columns+'><center><font color=darkcyan><strong>UPS Audit v'+$ScriptVer+' completed at: '+$DateTime+' from '+$Env:COMPUTERNAME+'</strong></center></td></tr>'   
 $HtmlReport += '</table></div></body></html>'
 
 #--[ Only keep the last 10 of the log files ]-- 
@@ -841,9 +849,6 @@ If ($BrowserLoad){
 
 If ($ExtOption.ConsoleState){Write-host "`n--- Completed ---" -foregroundcolor red}
 
-#}catch{
- #   add-content -Path $PSScriptRoot\new-error.log -Value $_.Exception.Message
-#}
 <#--[ XML File Example -- File should be named same as the script ]--
 <!-- Settings & configuration file -->
 <Settings>
