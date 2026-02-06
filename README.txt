@@ -8,7 +8,7 @@ Pulls status from a list of APC UPS devices and emails an HTML Report.
        Description : Uses SNMP to poll and track APC UPS devices using MS Excel.
                    : 
              Notes : This script is INTENDED to use an Excel back-end to track UPS inventory.  Because 
-                   : incidents arrise where Excel may not be available or function autonomously options 
+                   : incidents arise where Excel may not be available or function autonomously options 
                    : have been added to pull datas from both a flat text file as a CSV text file.
                    : Normal operation is with no command line options.  Commandline options noted below.
                    :
